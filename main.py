@@ -242,7 +242,7 @@ def eval_agent(
         env: gym.Env,
         episodes: int = 100,
         episode_len: int = 10,
-        plot: bool = True,
+        plot: bool = False,
 ) -> float:
     sucesses = 0
     fails = []

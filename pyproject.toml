@@ -6,7 +6,7 @@ authors = ["ddorn <diego.dorn@free.fr>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.10"
 minigrid = "^2.3.0"
 stable-baselines3 = "^2.0.0"
 torch = "<2.0.0"
@@ -18,6 +18,8 @@ plotly = "^5.15.0"
 einops = "^0.6.1"
 jaxtyping = "^0.2.20"
 tensorboard = "^2.13.0"
+click = "^8.1.6"
+joblib = "^1.3.1"
 
 
 [build-system]
