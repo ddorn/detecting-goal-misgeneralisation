@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "kasl"
+version = "0.1.0"
+description = ""
+authors = ["ddorn <diego.dorn@free.fr>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+minigrid = "^2.3.0"
+stable-baselines3 = "^2.0.0"
+torch = "<2.0.0"
+opencv-python = "^4.8.0.74"
+tqdm = "^4.65.0"
+rich = "^13.4.2"
+jupyter = "^1.0.0"
+plotly = "^5.15.0"
+einops = "^0.6.1"
+jaxtyping = "^0.2.20"
+tensorboard = "^2.13.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
