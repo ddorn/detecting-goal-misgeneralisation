@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypeVar, Callable, Literal
+from typing import TypeVar, Callable, Literal, Union
 
 import einops
 import gymnasium as gym
@@ -18,11 +18,11 @@ from stable_baselines3 import PPO
 
 Pos = tuple[int, int]
 T = TypeVar("T")
-Distribution = dict[T, float] | T
+Distribution = Union[dict[T, float], T]
 
 
 def uniform_distribution(
-    bottom_right: tuple[int, int], top_left: tuple[int, int] = (1, 1)) -> dict[Pos, float]:
+        bottom_right: tuple[int, int], top_left: tuple[int, int] = (1, 1)) -> dict[Pos, float]:
     """Returns a uniform distribution over the given rectangle. Bottom and right bounds are not inclusive."""
     return {
         (x, y): 1
@@ -50,13 +50,13 @@ def sample_distribution(distribution: Distribution[T]) -> T:
 class SimpleEnv(MiniGridEnv):
 
     def __init__(
-        self,
-        size=5,
-        goal_pos: Distribution[Pos] | None = (-2, -2),
-        agent_start_pos: Distribution[Pos] | None = (1, 1),
-        agent_start_dir: Distribution[int] = 0,
-        max_steps: int | None = None,
-        **kwargs,
+            self,
+            size=5,
+            goal_pos: Distribution[Pos] | None = (-2, -2),
+            agent_start_pos: Distribution[Pos] | None = (1, 1),
+            agent_start_dir: Distribution[int] | None = None,
+            max_steps: int | None = None,
+            **kwargs,
     ):
         """
         A simple square environment with a goal square and an agent. The agent can turn left, turn right, or move forward.
@@ -79,7 +79,7 @@ class SimpleEnv(MiniGridEnv):
         self.goal_pos = goal_pos
 
         if max_steps is None:
-            max_steps = 4 * (size - 2)**2
+            max_steps = 4 * (size - 2) ** 2
 
         super().__init__(
             MissionSpace(mission_func=lambda: "get to the green goal square"),
@@ -106,9 +106,12 @@ class SimpleEnv(MiniGridEnv):
         # Place the agent
         if self.agent_start_pos is not None:
             self.agent_pos = sample_distribution(self.agent_start_pos)
-            self.agent_dir = sample_distribution(self.agent_start_dir)
         else:
-            self.place_agent()
+            self.place_agent(rand_dir=False)
+        if self.agent_start_dir is None:
+            self.agent_dir = self._rand_int(0, 4)
+        else:
+            self.agent_dir = sample_distribution(self.agent_start_dir)
 
         self.add_walls()
 
@@ -163,6 +166,7 @@ class OneHotFullObsWrapper(ObservationWrapper):
         super().__init__(env)
         self.dim = len(self.MAPPING)
         self.remove_border_walls = remove_border_walls
+        # noinspection PyUnresolvedReferences
         w, h = env.observation_space["image"].shape[:2]
         if remove_border_walls:
             w -= 2
@@ -202,16 +206,35 @@ def wrap_env(env: gym.Env):
 
 
 def make_env(
-    size=5,
-    goal_pos: Distribution[Pos] | None = (-2, -2),
-    agent_start_pos: Distribution[Pos] | None = (1, 1),
-    agent_start_dir: Distribution[int] = 0,
-    max_steps: int | None = None,
-    **kwargs,
+        size=5,
+        goal_pos: Distribution[Pos] | None = (-2, -2),
+        agent_start_pos: Distribution[Pos] | None = (1, 1),
+        agent_start_dir: Distribution[int] = 0,
+        max_steps: int | None = None,
+        **kwargs,
 ) -> gym.Env:
     """Utility function to create and wrap a SimpleEnv."""
     env = SimpleEnv(size, goal_pos, agent_start_pos, agent_start_dir, max_steps, **kwargs)
     return wrap_env(env)
+
+
+def random_goal_env(size: int = 5):
+    """An SimpleEnv with a random goal position and random agent position."""
+    return wrap_env(
+        SimpleEnv(size=size, goal_pos=None, agent_start_pos=None, render_mode="rgb_array")
+    )
+
+
+def bottom_right_env(size: int = 5):
+    """An SimpleEnv with the goal position in the bottom right corner and random agent position."""
+    return wrap_env(
+        SimpleEnv(
+            size=size,
+            goal_pos=(size - 2, size - 2),
+            agent_start_pos=None,
+            render_mode="rgb_array",
+        )
+    )
 
 
 @dataclass
@@ -233,12 +256,77 @@ class Trajectory:
         )
         return image
 
+    @classmethod
+    def from_policy(
+            cls,
+            policy: PPO,
+            env: gym.Env,
+            max_len: int = 10,
+            end_condition: Callable[[dict], bool] | None = None,
+    ) -> Trajectory:
+        """Run the policy in the environment and return the trajectory."""
+        assert env.render_mode == "rgb_array"
+
+        obs, _info = env.reset()
+        images = [env.render()]
+        total_reward = 0
+        for step in range(max_len):
+            action, _states = policy.predict(obs, deterministic=True)
+
+            obs, reward, terminated, truncated, info = env.step(action)
+            total_reward += reward
+            images.append(env.render())
+            if end_condition is not None and end_condition(locals()):
+                return cls(np.stack(images), total_reward, "condition")
+            if terminated:
+                return cls(np.stack(images), total_reward, "terminated")
+            if truncated:
+                return cls(np.stack(images), total_reward, "truncated")
+
+        return cls(np.stack(images), total_reward, "truncated")
+
+
+class BottomRightAgent:
+    """Baseline agent that always goes to the bottom right corner."""
+
+    def predict(self, obs, deterministic=True):
+        assert len(obs.shape) == 3
+        size = obs.shape[0]
+
+        map = np.argmax(obs, axis=-1)  # (size, size)
+
+        # Find where the agent is
+        for i, j in np.ndindex(size, size):
+            if map[i, j] in (1, 2, 3, 4):
+                agent_pos = (i, j)
+                break
+
+        # noinspection PyUnboundLocalVariable
+        direction = map[agent_pos] - 1  # between 0 and 3: right, down, left, up
+
+        LEFT = 0, None
+        RIGHT = 1, None
+        FORWARD = 2, None
+
+        if direction == 0:
+            if agent_pos[0] == size - 1:
+                return RIGHT
+            return FORWARD
+        elif direction == 1:
+            if agent_pos[1] == size - 1:
+                return LEFT
+            return FORWARD
+        elif direction == 2:
+            return LEFT
+        elif direction == 3:
+            return RIGHT
+
 
 def get_trajectory(
-    policy: PPO,
-    env: gym.Env,
-    max_len: int = 10,
-    end_condition: Callable[[dict], bool] | None = None,
+        policy: PPO,
+        env: gym.Env,
+        max_len: int = 10,
+        end_condition: Callable[[dict], bool] | None = None,
 ) -> Trajectory:
     assert env.render_mode == "rgb_array"
 
@@ -276,27 +364,32 @@ class Perfs:
     info: dict[str, float] = field(default_factory=dict)
 
     @classmethod
-    def from_agent(cls, policy: PPO, episodes: int = 100, **info):
-        br_success_rate = eval_agent(policy, BR_GOAL_ENV, episodes)
-        success_rate = eval_agent(policy, RANDOM_GOAL_ENV, episodes)
+    def from_agent(cls, policy: PPO, episodes: int = 100, env_size: int = 5, **info):
+        br_goal_env = wrap_env(
+            SimpleEnv(size=env_size, goal_pos=(-2, -2), agent_start_pos=None, render_mode="rgb_array"))
+        random_goal_env = wrap_env(
+            SimpleEnv(size=env_size, goal_pos=None, agent_start_pos=None, render_mode="rgb_array"))
+
+        br_success_rate = eval_agent(policy, br_goal_env, episodes)
+        success_rate = eval_agent(policy, random_goal_env, episodes)
         br_freq = eval_agent(
             policy,
-            RANDOM_GOAL_ENV,
+            random_goal_env,
             episodes,
-            end_condition=lambda locals_: locals_["env"].agent_pos == (3, 3),
+            end_condition=lambda locals_: locals_["env"].agent_pos == (env_size - 2, env_size - 2),
         )
         return cls(br_success_rate, success_rate, br_freq, info)
 
 
 def show_behavior(
-    policy: PPO,
-    env: gym.Env,
-    n_trajectories: int = 10,
-    max_len: int = 10,
-    **plotly_kwargs,
+        policy: PPO,
+        env: gym.Env,
+        n_trajectories: int = 10,
+        max_len: int = 10,
+        **plotly_kwargs,
 ):
     trajectories = [
-        get_trajectory(policy, env, max_len=max_len).images for _ in range(n_trajectories)
+        Trajectory.from_policy(policy, env, max_len=max_len).images for _ in range(n_trajectories)
     ]
 
     actual_max_len = max(len(traj) for traj in trajectories)
@@ -312,18 +405,18 @@ def show_behavior(
 
 
 def eval_agent(
-    policy: PPO,
-    env: gym.Env = RANDOM_GOAL_ENV,
-    episodes: int = 100,
-    episode_len: int = 10,
-    plot: bool = False,
-    end_condition: Callable[[dict], bool] | None = None,
+        policy: PPO,
+        env: gym.Env = RANDOM_GOAL_ENV,
+        episodes: int = 100,
+        episode_len: int = 10,
+        plot: bool = False,
+        end_condition: Callable[[dict], bool] | None = None,
 ) -> float:
     nb_success = 0
     fails = []
     success_imgs = []
     for _ in range(episodes):
-        trajectory = get_trajectory(policy, env, max_len=episode_len, end_condition=end_condition)
+        trajectory = Trajectory.from_policy(policy, env, max_len=episode_len, end_condition=end_condition)
 
         if end_condition is None:
             success = trajectory.ended == "terminated"

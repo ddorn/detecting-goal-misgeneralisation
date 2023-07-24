@@ -2,22 +2,10 @@
 import time
 
 import click
-import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 
-from main import wrap_env, SimpleEnv, eval_agent, uniform_distribution
-
-random_goal_env = lambda size: wrap_env(
-    SimpleEnv(size=size, goal_pos=None, agent_start_pos=None, render_mode="rgb_array"))
-
-br_env = lambda size: wrap_env(
-    SimpleEnv(
-        size=size,
-        goal_pos=(size - 2, size - 2),
-        agent_start_pos=None,
-        render_mode="rgb_array",
-    ))
+from main import wrap_env, SimpleEnv, uniform_distribution, Perfs
 
 
 def get_agent(
@@ -28,10 +16,14 @@ def get_agent(
         env_size: int = 5,
         save: bool = True,
 ):
+    """Train a PPO agent on the SimpleEnv environment"""
+
     # Define the training environment
     goal_distrib = uniform_distribution((env_size - 1, env_size - 1))
     # There are (envsize-2)**2-1 other positions
-    goal_distrib[env_size - 2, env_size - 2] = (bottom_right_odds * (env_size - 2)**2 - 1)
+    goal_distrib[env_size - 2, env_size - 2] = (
+            bottom_right_odds * (env_size - 2) ** 2 - 1
+    )
     env = make_vec_env(
         lambda: wrap_env(
             SimpleEnv(
@@ -40,7 +32,8 @@ def get_agent(
                 # goal_pos=(-2, -2),
                 agent_start_pos=None,
                 # render_mode='rgb_array'
-            )),
+            )
+        ),
         n_envs=n_envs,
     )
 
@@ -49,12 +42,19 @@ def get_agent(
         "MlpPolicy",
         env,
         verbose=1,
-        # learning_rate=0.01,
-        learning_rate=lambda f: 0.01 * f,
+        learning_rate=0.01,
+        # learning_rate=lambda f: 0.001 * f,
+        # learning_rate=lambda f: 0.01 * f ** 1.5,
         policy_kwargs=dict(net_arch=net_arch),
         n_steps=2000 // n_envs,
-        batch_size=100,
-        n_epochs=40,
+        batch_size=2000,
+        n_epochs=20,
+        # buffer_size=10_000,
+        # learning_starts=5_000,
+        # gradient_steps=1,
+        # target_update_interval=1_000,
+        # exploration_fraction=0.2,
+        # exploration_final_eps=0.2,
         gamma=1,
         tensorboard_log="run_logs",
         device="cpu",
@@ -63,19 +63,19 @@ def get_agent(
     policy.learn(total_timesteps=steps)
 
     # Evaluate the agent
-    # br_success_rate = eval_agent(policy, base_env(env_size), 1000)
-    # success_rate = eval_agent(policy, general_env(env_size), 1000)
-    # print("Bottom right success rate:", br_success_rate)
-    # print("Success rate:", success_rate)
+    perfs = Perfs.from_agent(policy, episodes=300, env_size=env_size)
 
     # Save the agent
     if save:
-        # name = f"agents/ppo_{steps}steps_{success_rate * 1000:03.0f}gen_{br_success_rate * 1000:03.0f}br_{bottom_right_odds}odds_{time.time():.0f}"
-        name = f"agents/ppo_{steps}steps_{bottom_right_odds}odds_{time.time():.0f}"
+        name = f"agents/ppo_{steps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_" \
+               f"{perfs.general_br_freq}br_wrong_{bottom_right_odds}odds_{time.time():.0f}"
+        perfs.info['file'] = name
         policy.save(name)
         print(f"Saved model to {name}")
 
-    return policy
+    print(perfs)
+
+    return policy, perfs
 
 
 @click.command()
