@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeVar, Callable, Literal
 
 import einops
@@ -273,9 +273,10 @@ class Perfs:
     br_env: float
     general_env: float
     general_br_freq: float
+    info: dict[str, float] = field(default_factory=dict)
 
     @classmethod
-    def from_agent(cls, policy: PPO, episodes: int = 100):
+    def from_agent(cls, policy: PPO, episodes: int = 100, **info):
         br_success_rate = eval_agent(policy, BR_GOAL_ENV, episodes)
         success_rate = eval_agent(policy, RANDOM_GOAL_ENV, episodes)
         br_freq = eval_agent(
@@ -284,7 +285,7 @@ class Perfs:
             episodes,
             end_condition=lambda locals_: locals_["env"].agent_pos == (3, 3),
         )
-        return cls(br_success_rate, success_rate, br_freq)
+        return cls(br_success_rate, success_rate, br_freq, info)
 
 
 def show_behavior(
