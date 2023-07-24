@@ -2,6 +2,7 @@
 import time
 
 import click
+from joblib import Parallel, delayed
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 
@@ -15,6 +16,7 @@ def get_agent(
         net_arch: tuple = (30, 10),
         env_size: int = 5,
         save: bool = True,
+        verbose: int = 2,
 ):
     """Train a PPO agent on the SimpleEnv environment"""
 
@@ -38,8 +40,8 @@ def get_agent(
     policy = PPO(
         "MlpPolicy",
         env,
-        verbose=1,
-        learning_rate=0.01,
+        verbose=verbose >= 2,
+        learning_rate=0.001,
         # learning_rate=lambda f: 0.001 * f,
         # learning_rate=lambda f: 0.01 * f ** 1.5,
         policy_kwargs=dict(net_arch=net_arch),
@@ -65,23 +67,27 @@ def get_agent(
     # Save the agent
     if save:
         name = (
-            f"agents/ppo_{steps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_"
+            f"agents/ppo_{env_size}env_{steps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_"
             f"{perfs.general_br_freq}br_wrong_{bottom_right_odds}odds_{time.time():.0f}")
         perfs.info["file"] = name
         policy.save(name)
-        print(f"Saved model to {name}")
+        if verbose >= 1:
+            print(f"Saved model to {name}")
 
-    print(perfs)
+    if verbose >= 1:
+        print(perfs)
 
     return policy, perfs
 
 
 @click.command()
 @click.option("--steps", default=50_000, help="Number of steps to train the agent for")
-@click.option("--br-odds", default=1, help="Odds of the goal being in the bottom right corner")
+@click.option("--br-odds", default=1, help="Odds of the goal being in the bottom right corner. 3 means three times more likely than not.")
 @click.option("--n-agents", default=1, help="Number of agents to train")
 @click.option("--n-envs", default=1, help="Number of environments to train on")
 @click.option("--jobs", default=1, help="Number of jobs to run in parallel")
+@click.option("--env-size", default=5, help="Size of the environment")
+@click.option("-v", "--verbose", count=True, help="Verbosity level (0-2)")
 @click.option(
     "--arch",
     default="30:10",
@@ -89,15 +95,20 @@ def get_agent(
     type=str,
     help="Neural network architecture, as a string of integers separated by colons (ex. 30:10)",
 )
-def train(steps: int, br_odds: int, n_agents: int, n_envs: int, jobs: int, arch: tuple):
+def train(steps: int, br_odds: int, n_agents: int, n_envs: int, jobs: int, env_size: int,
+            verbose: int,
+          arch: tuple):
     """Train a PPO agent on the SimpleEnv environment"""
-    if n_agents > 1:
-        from joblib import Parallel, delayed
 
-        Parallel(n_jobs=jobs)(delayed(get_agent)(br_odds, steps, n_envs, net_arch=arch)
-                              for _ in range(n_agents))
+    def get():
+        get_agent(br_odds, steps, n_envs, net_arch=arch, env_size=env_size, verbose=verbose)
+        # Not returning anything to avoid pickling the agent for nothing
+        # Joblib also throws an error if the agent is returned (cannot pickle _thread.lock objects)
+
+    if n_agents > 1:
+        Parallel(n_jobs=jobs)(delayed(get)() for _ in range(n_agents))
     else:
-        get_agent(br_odds, steps, n_envs)
+        get()
 
 
 if __name__ == "__main__":
