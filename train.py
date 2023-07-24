@@ -21,9 +21,7 @@ def get_agent(
     # Define the training environment
     goal_distrib = uniform_distribution((env_size - 1, env_size - 1))
     # There are (envsize-2)**2-1 other positions
-    goal_distrib[env_size - 2, env_size - 2] = (
-            bottom_right_odds * (env_size - 2) ** 2 - 1
-    )
+    goal_distrib[env_size - 2, env_size - 2] = (bottom_right_odds * (env_size - 2)**2 - 1)
     env = make_vec_env(
         lambda: wrap_env(
             SimpleEnv(
@@ -32,8 +30,7 @@ def get_agent(
                 # goal_pos=(-2, -2),
                 agent_start_pos=None,
                 # render_mode='rgb_array'
-            )
-        ),
+            )),
         n_envs=n_envs,
     )
 
@@ -67,9 +64,10 @@ def get_agent(
 
     # Save the agent
     if save:
-        name = f"agents/ppo_{steps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_" \
-               f"{perfs.general_br_freq}br_wrong_{bottom_right_odds}odds_{time.time():.0f}"
-        perfs.info['file'] = name
+        name = (
+            f"agents/ppo_{steps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_"
+            f"{perfs.general_br_freq}br_wrong_{bottom_right_odds}odds_{time.time():.0f}")
+        perfs.info["file"] = name
         policy.save(name)
         print(f"Saved model to {name}")
 

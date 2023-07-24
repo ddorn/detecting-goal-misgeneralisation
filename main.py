@@ -22,7 +22,7 @@ Distribution = Union[dict[T, float], T]
 
 
 def uniform_distribution(
-        bottom_right: tuple[int, int], top_left: tuple[int, int] = (1, 1)) -> dict[Pos, float]:
+    bottom_right: tuple[int, int], top_left: tuple[int, int] = (1, 1)) -> dict[Pos, float]:
     """Returns a uniform distribution over the given rectangle. Bottom and right bounds are not inclusive."""
     return {
         (x, y): 1
@@ -50,13 +50,13 @@ def sample_distribution(distribution: Distribution[T]) -> T:
 class SimpleEnv(MiniGridEnv):
 
     def __init__(
-            self,
-            size=5,
-            goal_pos: Distribution[Pos] | None = (-2, -2),
-            agent_start_pos: Distribution[Pos] | None = (1, 1),
-            agent_start_dir: Distribution[int] | None = None,
-            max_steps: int | None = None,
-            **kwargs,
+        self,
+        size=5,
+        goal_pos: Distribution[Pos] | None = (-2, -2),
+        agent_start_pos: Distribution[Pos] | None = (1, 1),
+        agent_start_dir: Distribution[int] | None = None,
+        max_steps: int | None = None,
+        **kwargs,
     ):
         """
         A simple square environment with a goal square and an agent. The agent can turn left, turn right, or move forward.
@@ -79,7 +79,7 @@ class SimpleEnv(MiniGridEnv):
         self.goal_pos = goal_pos
 
         if max_steps is None:
-            max_steps = 4 * (size - 2) ** 2
+            max_steps = 4 * (size - 2)**2
 
         super().__init__(
             MissionSpace(mission_func=lambda: "get to the green goal square"),
@@ -206,12 +206,12 @@ def wrap_env(env: gym.Env):
 
 
 def make_env(
-        size=5,
-        goal_pos: Distribution[Pos] | None = (-2, -2),
-        agent_start_pos: Distribution[Pos] | None = (1, 1),
-        agent_start_dir: Distribution[int] = 0,
-        max_steps: int | None = None,
-        **kwargs,
+    size=5,
+    goal_pos: Distribution[Pos] | None = (-2, -2),
+    agent_start_pos: Distribution[Pos] | None = (1, 1),
+    agent_start_dir: Distribution[int] = 0,
+    max_steps: int | None = None,
+    **kwargs,
 ) -> gym.Env:
     """Utility function to create and wrap a SimpleEnv."""
     env = SimpleEnv(size, goal_pos, agent_start_pos, agent_start_dir, max_steps, **kwargs)
@@ -221,8 +221,7 @@ def make_env(
 def random_goal_env(size: int = 5):
     """An SimpleEnv with a random goal position and random agent position."""
     return wrap_env(
-        SimpleEnv(size=size, goal_pos=None, agent_start_pos=None, render_mode="rgb_array")
-    )
+        SimpleEnv(size=size, goal_pos=None, agent_start_pos=None, render_mode="rgb_array"))
 
 
 def bottom_right_env(size: int = 5):
@@ -233,8 +232,7 @@ def bottom_right_env(size: int = 5):
             goal_pos=(size - 2, size - 2),
             agent_start_pos=None,
             render_mode="rgb_array",
-        )
-    )
+        ))
 
 
 @dataclass
@@ -258,11 +256,11 @@ class Trajectory:
 
     @classmethod
     def from_policy(
-            cls,
-            policy: PPO,
-            env: gym.Env,
-            max_len: int = 10,
-            end_condition: Callable[[dict], bool] | None = None,
+        cls,
+        policy: PPO,
+        env: gym.Env,
+        max_len: int = 10,
+        end_condition: Callable[[dict], bool] | None = None,
     ) -> Trajectory:
         """Run the policy in the environment and return the trajectory."""
         assert env.render_mode == "rgb_array"
@@ -323,10 +321,10 @@ class BottomRightAgent:
 
 
 def get_trajectory(
-        policy: PPO,
-        env: gym.Env,
-        max_len: int = 10,
-        end_condition: Callable[[dict], bool] | None = None,
+    policy: PPO,
+    env: gym.Env,
+    max_len: int = 10,
+    end_condition: Callable[[dict], bool] | None = None,
 ) -> Trajectory:
     assert env.render_mode == "rgb_array"
 
@@ -366,9 +364,19 @@ class Perfs:
     @classmethod
     def from_agent(cls, policy: PPO, episodes: int = 100, env_size: int = 5, **info):
         br_goal_env = wrap_env(
-            SimpleEnv(size=env_size, goal_pos=(-2, -2), agent_start_pos=None, render_mode="rgb_array"))
+            SimpleEnv(
+                size=env_size,
+                goal_pos=(-2, -2),
+                agent_start_pos=None,
+                render_mode="rgb_array",
+            ))
         random_goal_env = wrap_env(
-            SimpleEnv(size=env_size, goal_pos=None, agent_start_pos=None, render_mode="rgb_array"))
+            SimpleEnv(
+                size=env_size,
+                goal_pos=None,
+                agent_start_pos=None,
+                render_mode="rgb_array",
+            ))
 
         br_success_rate = eval_agent(policy, br_goal_env, episodes)
         success_rate = eval_agent(policy, random_goal_env, episodes)
@@ -382,11 +390,11 @@ class Perfs:
 
 
 def show_behavior(
-        policy: PPO,
-        env: gym.Env,
-        n_trajectories: int = 10,
-        max_len: int = 10,
-        **plotly_kwargs,
+    policy: PPO,
+    env: gym.Env,
+    n_trajectories: int = 10,
+    max_len: int = 10,
+    **plotly_kwargs,
 ):
     trajectories = [
         Trajectory.from_policy(policy, env, max_len=max_len).images for _ in range(n_trajectories)
@@ -405,18 +413,21 @@ def show_behavior(
 
 
 def eval_agent(
-        policy: PPO,
-        env: gym.Env = RANDOM_GOAL_ENV,
-        episodes: int = 100,
-        episode_len: int = 10,
-        plot: bool = False,
-        end_condition: Callable[[dict], bool] | None = None,
+    policy: PPO,
+    env: gym.Env = RANDOM_GOAL_ENV,
+    episodes: int = 100,
+    episode_len: int = 10,
+    plot: bool = False,
+    end_condition: Callable[[dict], bool] | None = None,
 ) -> float:
     nb_success = 0
     fails = []
     success_imgs = []
     for _ in range(episodes):
-        trajectory = Trajectory.from_policy(policy, env, max_len=episode_len, end_condition=end_condition)
+        trajectory = Trajectory.from_policy(policy,
+                                            env,
+                                            max_len=episode_len,
+                                            end_condition=end_condition)
 
         if end_condition is None:
             success = trajectory.ended == "terminated"
