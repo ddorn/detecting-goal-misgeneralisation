@@ -25,3 +25,9 @@ joblib = "^1.3.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.yapf]
+column_limit = 100
+continuation_align_style = "space"
+coalesce_brackets = true
+indent_dictionary_value = true

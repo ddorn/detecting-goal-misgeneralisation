@@ -1,8 +1,7 @@
-# %%
 from __future__ import annotations
 
-from time import sleep
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import TypeVar, Callable, Literal
 
 import einops
 import gymnasium as gym
@@ -12,22 +11,24 @@ from gymnasium import ActionWrapper, ObservationWrapper
 from gymnasium.core import WrapperObsType
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import Goal
+from minigrid.core.world_object import Goal, Lava
 from minigrid.minigrid_env import MiniGridEnv
 from minigrid.wrappers import FullyObsWrapper
-from rich import print as pprint
 from stable_baselines3 import PPO
-from stable_baselines3.common.env_util import make_vec_env
 
-# %%
 Pos = tuple[int, int]
 T = TypeVar("T")
 Distribution = dict[T, float] | T
 
 
-def uniform_distribution(bottom_right: tuple[int, int], top_left: tuple[int, int] = (1, 1)) -> dict[Pos, float]:
+def uniform_distribution(
+    bottom_right: tuple[int, int], top_left: tuple[int, int] = (1, 1)) -> dict[Pos, float]:
     """Returns a uniform distribution over the given rectangle. Bottom and right bounds are not inclusive."""
-    return {(x, y): 1 for x in range(top_left[0], bottom_right[0]) for y in range(top_left[1], bottom_right[1])}
+    return {
+        (x, y): 1
+        for x in range(top_left[0], bottom_right[0])
+        for y in range(top_left[1], bottom_right[1])
+    }
 
 
 def sample_distribution(distribution: Distribution[T]) -> T:
@@ -48,12 +49,15 @@ def sample_distribution(distribution: Distribution[T]) -> T:
 
 class SimpleEnv(MiniGridEnv):
 
-    def __init__(self,
-                 size=5,
-                 goal_pos: Distribution[Pos] | None = (-2, -2),
-                 agent_start_pos: Distribution[Pos] | None = (1, 1),
-                 agent_start_dir: Distribution[int] = 0,
-                 max_steps: int | None = None, **kwargs):
+    def __init__(
+        self,
+        size=5,
+        goal_pos: Distribution[Pos] | None = (-2, -2),
+        agent_start_pos: Distribution[Pos] | None = (1, 1),
+        agent_start_dir: Distribution[int] = 0,
+        max_steps: int | None = None,
+        **kwargs,
+    ):
         """
         A simple square environment with a goal square and an agent. The agent can turn left, turn right, or move forward.
 
@@ -75,14 +79,14 @@ class SimpleEnv(MiniGridEnv):
         self.goal_pos = goal_pos
 
         if max_steps is None:
-            max_steps = 4 * (size - 2) ** 2
+            max_steps = 4 * (size - 2)**2
 
         super().__init__(
             MissionSpace(mission_func=lambda: "get to the green goal square"),
             grid_size=size,
             see_through_walls=True,
             max_steps=max_steps,
-            **kwargs
+            **kwargs,
         )
 
     def _gen_grid(self, width, height):
@@ -106,8 +110,20 @@ class SimpleEnv(MiniGridEnv):
         else:
             self.place_agent()
 
+        self.add_walls()
+
+    def add_walls(self):
+        pass
+
+
+class SimpleEnvWithLava(SimpleEnv):
+
+    def add_walls(self):
+        self.place_obj(Lava())
+
 
 class ActionSubsetWrapper(ActionWrapper):
+
     def __init__(self, env: gym.Env, action_subset: list[int]):
         """
         Action wrapper that restricts the action space to a subset of the original discrete action space.
@@ -147,14 +163,14 @@ class OneHotFullObsWrapper(ObservationWrapper):
         super().__init__(env)
         self.dim = len(self.MAPPING)
         self.remove_border_walls = remove_border_walls
-        w, h = env.observation_space['image'].shape[:2]
+        w, h = env.observation_space["image"].shape[:2]
         if remove_border_walls:
             w -= 2
             h -= 2
         self.observation_space = gym.spaces.MultiBinary((w, h, self.dim))
 
     def observation(self, observation: WrapperObsType):
-        img = observation['image']
+        img = observation["image"]
         out = np.zeros((img.shape[0], img.shape[1], self.dim))
 
         for i in range(img.shape[0]):
@@ -186,97 +202,156 @@ def wrap_env(env: gym.Env):
 
 
 def make_env(
-        size=5,
-        goal_pos: Distribution[Pos] | None = (-2, -2),
-        agent_start_pos: Distribution[Pos] | None = (1, 1),
-        agent_start_dir: Distribution[int] = 0,
-        max_steps: int | None = None, **kwargs) -> gym.Env:
+    size=5,
+    goal_pos: Distribution[Pos] | None = (-2, -2),
+    agent_start_pos: Distribution[Pos] | None = (1, 1),
+    agent_start_dir: Distribution[int] = 0,
+    max_steps: int | None = None,
+    **kwargs,
+) -> gym.Env:
     """Utility function to create and wrap a SimpleEnv."""
     env = SimpleEnv(size, goal_pos, agent_start_pos, agent_start_dir, max_steps, **kwargs)
     return wrap_env(env)
 
 
+@dataclass
+class Trajectory:
+    images: np.ndarray  # (time, height, width, channels)
+    reward: float
+    ended: Literal["truncated", "terminated", "condition"]
+
+    def image(self, pad_to: int | None = None) -> np.ndarray:
+        """Return all images concatenated along the time axis."""
+
+        empty = np.zeros_like(self.images[0])
+        if pad_to is None:
+            pad_to = len(self.images)
+
+        image = einops.rearrange(
+            self.images + [empty] * (pad_to - len(self.images)),
+            "time h w c -> h (time w) c",
+        )
+        return image
+
+
 def get_trajectory(
-        policy: PPO,
-        agent_start: tuple[int, int],
-        goal: tuple[int, int],
-        env_size: int = 5,
-        max_len: int = 10,
-):
-    env = wrap_env(SimpleEnv(env_size, goal, agent_start, render_mode='rgb_array'))
+    policy: PPO,
+    env: gym.Env,
+    max_len: int = 10,
+    end_condition: Callable[[dict], bool] | None = None,
+) -> Trajectory:
+    assert env.render_mode == "rgb_array"
+
     obs, _info = env.reset()
     images = [env.render()]
-    for i in range(max_len):
+    total_reward = 0
+    for step in range(max_len):
         action, _states = policy.predict(obs, deterministic=True)
 
         obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
         images.append(env.render())
-        if terminated or truncated:
-            break
+        if end_condition is not None and end_condition(locals()):
+            return Trajectory(np.stack(images), total_reward, "condition")
+        if terminated:
+            return Trajectory(np.stack(images), total_reward, "terminated")
+        if truncated:
+            return Trajectory(np.stack(images), total_reward, "truncated")
 
-    # images += [np.zeros_like(images[0])] * (max_len - len(images))
-    return np.stack(images)
+    return Trajectory(np.stack(images), total_reward, "truncated")
 
-def get_trajectories(
-        policy: PPO,
-        starts_goals: list[tuple[tuple[int, int], tuple[int, int]]],
-        max_len: int = 10,
-        plot: bool = True, env_size: int = 5):
-    trajectories = []
-    for start, goal in starts_goals:
-        trajectories.append(get_trajectory(policy, start, goal, env_size=env_size, max_len=max_len))
+
+RANDOM_GOAL_ENV = wrap_env(
+    SimpleEnv(size=5, goal_pos=None, agent_start_pos=None, render_mode="rgb_array"))
+
+BR_GOAL_ENV = wrap_env(
+    SimpleEnv(size=5, goal_pos=(-2, -2), agent_start_pos=None, render_mode="rgb_array"))
+
+
+@dataclass
+class Perfs:
+    br_env: float
+    general_env: float
+    general_br_freq: float
+
+    @classmethod
+    def from_agent(cls, policy: PPO, episodes: int = 100):
+        br_success_rate = eval_agent(policy, BR_GOAL_ENV, episodes)
+        success_rate = eval_agent(policy, RANDOM_GOAL_ENV, episodes)
+        br_freq = eval_agent(
+            policy,
+            RANDOM_GOAL_ENV,
+            episodes,
+            end_condition=lambda locals_: locals_["env"].agent_pos == (3, 3),
+        )
+        return cls(br_success_rate, success_rate, br_freq)
+
+
+def show_behavior(
+    policy: PPO,
+    env: gym.Env,
+    n_trajectories: int = 10,
+    max_len: int = 10,
+    **plotly_kwargs,
+):
+    trajectories = [
+        get_trajectory(policy, env, max_len=max_len).images for _ in range(n_trajectories)
+    ]
 
     actual_max_len = max(len(traj) for traj in trajectories)
     for i, traj in enumerate(trajectories):
         trajectories[i] = np.pad(traj, ((0, actual_max_len - len(traj)), (0, 0), (0, 0), (0, 0)))
 
     trajectories = np.stack(trajectories)
-    if plot:
-        imgs = einops.rearrange(trajectories, 'traj step h w c -> (traj h) (step w) c')
-        px.imshow(imgs).show()
 
-    return trajectories
+    imgs = einops.rearrange(trajectories, "traj step h w c -> (traj h) (step w) c")
+    plotly_kwargs.setdefault("height", imgs.shape[0] // 2)
+    plotly_kwargs.setdefault("width", imgs.shape[1] // 2)
+    px.imshow(imgs, **plotly_kwargs).show()
+
 
 def eval_agent(
-        policy: PPO,
-        env: gym.Env,
-        episodes: int = 100,
-        episode_len: int = 10,
-        plot: bool = False,
+    policy: PPO,
+    env: gym.Env = RANDOM_GOAL_ENV,
+    episodes: int = 100,
+    episode_len: int = 10,
+    plot: bool = False,
+    end_condition: Callable[[dict], bool] | None = None,
 ) -> float:
-    sucesses = 0
+    nb_success = 0
     fails = []
     success_imgs = []
     for _ in range(episodes):
-        obs, _info = env.reset()
-        initial_pos = env.render()
-        for _ in range(episode_len):
-            action, _states = policy.predict(obs, deterministic=False)
-            obs, reward, terminated, truncated, info = env.step(action)
-            if terminated:
-                sucesses += 1
-                if not any(np.all(success_img == initial_pos) for success_img in success_imgs):
-                    success_imgs.append(initial_pos)
-                break
+        trajectory = get_trajectory(policy, env, max_len=episode_len, end_condition=end_condition)
+
+        if end_condition is None:
+            success = trajectory.ended == "terminated"
         else:
-            for fail_initial in fails:
-                if np.all(fail_initial == initial_pos):
-                    break
-            else:
-                fails.append(initial_pos)
+            success = trajectory.ended == "condition"
+
+        if success:
+            nb_success += 1
+            add_to = success_imgs
+        else:
+            add_to = fails
+
+        # If the initial position is not in the list, add it
+        if all(np.any(img != trajectory.images[0]) for img in add_to):
+            add_to.append(trajectory.images[0])
 
     # show fails
-    if fails and success_imgs and plot:
-        print(f"Success rate: {sucesses/episodes:.2%}")
+    if plot and fails and success_imgs:
+        print(f"Success rate: {nb_success / episodes:.2%}")
         for imgs, title in [(fails, "failed"), (success_imgs, "succeeded")]:
             prop = len(imgs) / (len(fails) + len(success_imgs))
-            if len(imgs) > 100:
-                imgs = imgs[:100]
-            if len(imgs) % 10 != 0:
-                imgs += [np.zeros_like(imgs[0])] * (10 - len(imgs) % 10)
+            # Max 100 images, and pad to multiple of 10
+            imgs = imgs[:100]
+            imgs += [np.zeros_like(imgs[0])] * (10 - len(imgs) % 10)
 
             img = einops.rearrange(imgs, "(row col) h w c -> (row h) (col w) c", row=10)
-            px.imshow(img, title=f"Positions where the agent {title} to reach the goal. {prop:.2%}").show()
+            px.imshow(
+                img,
+                title=f"Positions where the agent {title} to reach the goal. {prop:.2%}",
+            ).show()
 
-    return sucesses / episodes
-
+    return nb_success / episodes
