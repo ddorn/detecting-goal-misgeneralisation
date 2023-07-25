@@ -14,8 +14,8 @@ config = dict(
     parameters=dict(
         lr=dict(min=1e-6, max=1e-2, distribution="log_uniform_values"),
         n_epochs=dict(min=5, max=100),
-        total_timesteps=dict(min=10_000, max=100_000, distribution="q_log_uniform_values"),
-        batch_size=dict(min=500, max=20_000),
+        total_timesteps=dict(min=10_000, max=150_000, distribution="q_log_uniform_values"),
+        batch_size=dict(min=32, max=2_000),
         n_steps=dict(min=500, max=20_000),
         env_size=dict(value=7),
         first_layer_size=dict(min=50, max=200),
@@ -23,7 +23,7 @@ config = dict(
         # first_layer_size=dict(value=15),
         # second_layer_size=dict(value=15),
         # weight_decay=dict(min=0.0, max=0.01),
-        weight_decay=dict(value=0.0),
+        # weight_decay=dict(value=0.0),
     )
 )
 
@@ -42,7 +42,7 @@ def do_run():
             n_epochs=config.n_epochs,
             n_steps=config.n_steps,
             batch_size=config.batch_size,
-            weight_decay=config.weight_decay,
+            # weight_decay=config.weight_decay,
         )
         run.summary["perfs"] = dataclasses.asdict(perfs)
         run.summary["model_size"] = sum(p.numel() for p in policy.policy.parameters())

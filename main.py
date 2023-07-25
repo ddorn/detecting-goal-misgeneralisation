@@ -190,6 +190,7 @@ class OneHotFullObsWrapper(ObservationWrapper):
         return out
 
 
+
 def wrap_env(env: gym.Env):
     """Returns a wrapped environment with the following wrappers:
     - Restrict the action space to the first 3 actions (turn left, turn right, move forward)
@@ -387,12 +388,14 @@ class Perfs:
                 render_mode="rgb_array",
             ))
 
-        br_success_rate = eval_agent(policy, br_goal_env, episodes)
-        success_rate = eval_agent(policy, random_goal_env, episodes)
+        max_len = env_size ** 2
+        br_success_rate = eval_agent(policy, br_goal_env, episodes, episode_len=max_len)
+        success_rate = eval_agent(policy, random_goal_env, episodes, episode_len=max_len)
         br_freq = eval_agent(
             policy,
             random_goal_env,
             episodes,
+            episode_len=max_len,
             end_condition=lambda locals_: locals_["env"].agent_pos == (env_size - 2, env_size - 2),
         )
         return cls(br_success_rate, success_rate, br_freq, env_size, info)

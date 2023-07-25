@@ -1,12 +1,18 @@
 #!/usr/bin/env python3.11
+from __future__ import annotations
+
 import dataclasses
 import json
 import time
+from typing import Type
 
 import click
 from joblib import Parallel, delayed
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
@@ -27,7 +33,9 @@ def get_agent(
         n_epochs: int = 40,
         n_steps: int = 6_000,
         batch_size: int = 6_000,
-        weight_decay: float = 0,
+        policy: str | Type[ActorCriticPolicy] = "MlpPolicy",
+        policy_kwargs: dict | None = None,
+        # weight_decay: float = 0,
 ):
     """Train a PPO agent on the SimpleEnv environment"""
 
@@ -48,18 +56,24 @@ def get_agent(
         n_envs=n_envs,
     )
 
+    if policy_kwargs is None:
+        policy_kwargs = {}
+
+    policy_kwargs.setdefault("net_arch", net_arch)
+
     # Define the policy network
     policy = PPO(
-        "MlpPolicy",
+        policy,
         env,
         verbose=verbose >= 2,
         learning_rate=learning_rate,
         # learning_rate=lambda f: 0.001 * f,
         # learning_rate=lambda f: 0.01 * f ** 1.5,
-        policy_kwargs=dict(net_arch=net_arch),  # optimizer_kwargs=dict(weight_decay=weight_decay)),
+        policy_kwargs=dict(**policy_kwargs),  # optimizer_kwargs=dict(weight_decay=weight_decay)),
+        # arch_kwargs=dict(net_arch=net_arch, features_extractor_class=BaseFeaturesExtractor),
         n_steps=n_steps,
         batch_size=batch_size,
-        # n_epochs=n_epochs,
+        n_epochs=n_epochs,
 
         # buffer_size=10_000,
         # learning_starts=5_000,
@@ -71,6 +85,11 @@ def get_agent(
         tensorboard_log="run_logs",
         device="cpu",
     )
+    if verbose >= 1:
+        # nb of parameters
+        print("Number of parameters", sum(p.numel() for p in policy.policy.parameters()))
+
+
     # Train the agent
     if use_wandb:
         wandb.init(
