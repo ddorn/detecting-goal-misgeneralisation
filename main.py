@@ -359,6 +359,7 @@ class Perfs:
     br_env: float
     general_env: float
     general_br_freq: float
+    env_size: int
     info: dict[str, float] = field(default_factory=dict)
 
     @classmethod
@@ -386,7 +387,7 @@ class Perfs:
             episodes,
             end_condition=lambda locals_: locals_["env"].agent_pos == (env_size - 2, env_size - 2),
         )
-        return cls(br_success_rate, success_rate, br_freq, info)
+        return cls(br_success_rate, success_rate, br_freq, env_size, info)
 
 
 def show_behavior(
@@ -416,7 +417,7 @@ def eval_agent(
     policy: PPO,
     env: gym.Env = RANDOM_GOAL_ENV,
     episodes: int = 100,
-    episode_len: int = 10,
+    episode_len: int = 100,
     plot: bool = False,
     end_condition: Callable[[dict], bool] | None = None,
 ) -> float:

@@ -1,22 +1,33 @@
 #!/usr/bin/env python3.11
+import dataclasses
+import json
 import time
 
 import click
 from joblib import Parallel, delayed
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
+import wandb
+from wandb.integration.sb3 import WandbCallback
 
 from main import wrap_env, SimpleEnv, uniform_distribution, Perfs
 
 
 def get_agent(
-        bottom_right_odds: int,
-        steps: int = 50_000,
+        bottom_right_odds: float,
+        total_timesteps: int = 50_000,
         n_envs: int = 1,
-        net_arch: tuple = (30, 10),
         env_size: int = 5,
         save: bool = True,
         verbose: int = 2,
+        use_wandb: bool = False,
+        *,
+        net_arch: tuple = (30, 10),
+        learning_rate: float = 0.001,
+        n_epochs: int = 40,
+        n_steps: int = 6_000,
+        batch_size: int = 6_000,
+        weight_decay: float = 0,
 ):
     """Train a PPO agent on the SimpleEnv environment"""
 
@@ -41,13 +52,14 @@ def get_agent(
         "MlpPolicy",
         env,
         verbose=verbose >= 2,
-        learning_rate=0.001,
+        learning_rate=learning_rate,
         # learning_rate=lambda f: 0.001 * f,
         # learning_rate=lambda f: 0.01 * f ** 1.5,
-        policy_kwargs=dict(net_arch=net_arch),
-        n_steps=2000 // n_envs,
-        batch_size=2000,
-        n_epochs=20,
+        policy_kwargs=dict(net_arch=net_arch, optimizer_kwargs=dict(weight_decay=weight_decay)),
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+
         # buffer_size=10_000,
         # learning_starts=5_000,
         # gradient_steps=1,
@@ -59,18 +71,35 @@ def get_agent(
         device="cpu",
     )
     # Train the agent
-    policy.learn(total_timesteps=steps)
+    if use_wandb:
+        wandb.init(
+            sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
+            save_code=True,
+        )
+    policy.learn(total_timesteps=total_timesteps,
+                 callback=WandbCallback(verbose=2) if use_wandb else None)
 
     # Evaluate the agent
-    perfs = Perfs.from_agent(policy, episodes=300, env_size=env_size)
+    perfs = Perfs.from_agent(policy, episodes=300, env_size=env_size,
+                             net_arch=net_arch,
+                             learning_rate=learning_rate,
+                             steps=total_timesteps)
+
+    if use_wandb:
+        wandb.log({
+            "general_env": perfs.general_env,
+            "br_env": perfs.br_env,
+            "general_br_freq": perfs.general_br_freq,
+        })
 
     # Save the agent
     if save:
         name = (
             f"agents/ppo_{env_size}env_{steps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_"
-            f"{perfs.general_br_freq}br_wrong_{bottom_right_odds}odds_{time.time():.0f}")
+            f"{perfs.general_br_freq * 1000:03.0f}br_wrong_{bottom_right_odds}odds_{time.time():.0f}")
         perfs.info["file"] = name
         policy.save(name)
+        json.dump(dataclasses.asdict(perfs), open(name + ".json", "w"))
         if verbose >= 1:
             print(f"Saved model to {name}")
 
