@@ -14,7 +14,7 @@ from main import wrap_env, SimpleEnv, uniform_distribution, Perfs
 
 
 def get_agent(
-        bottom_right_odds: float,
+        bottom_right_odds: float | None = None,
         total_timesteps: int = 50_000,
         n_envs: int = 1,
         env_size: int = 5,
@@ -33,8 +33,9 @@ def get_agent(
 
     # Define the training environment
     goal_distrib = uniform_distribution((env_size - 1, env_size - 1))
-    # There are (envsize-2)**2-1 other positions
-    goal_distrib[env_size - 2, env_size - 2] = (bottom_right_odds * (env_size - 2)**2 - 1)
+    if bottom_right_odds is not None:
+        # There are (env_size-2)**2-1 other positions
+        goal_distrib[env_size - 2, env_size - 2] = (bottom_right_odds * (env_size - 2)**2 - 1)
     env = make_vec_env(
         lambda: wrap_env(
             SimpleEnv(
