@@ -261,27 +261,35 @@ class Trajectory:
         env: gym.Env,
         max_len: int = 10,
         end_condition: Callable[[dict], bool] | None = None,
+        no_images: bool = False,
     ) -> Trajectory:
         """Run the policy in the environment and return the trajectory."""
         assert env.render_mode == "rgb_array"
 
+        def mk_output(ended: str):
+            if images:
+                return cls(np.stack(images), total_reward, ended)
+            else:
+                return cls(np.zeros((0, 0, 0, 0)), total_reward, ended)
+
         obs, _info = env.reset()
-        images = [env.render()]
+        images = [env.render()] if not no_images else []
         total_reward = 0
         for step in range(max_len):
             action, _states = policy.predict(obs, deterministic=True)
 
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
-            images.append(env.render())
+            if not no_images:
+                images.append(env.render())
             if end_condition is not None and end_condition(locals()):
-                return cls(np.stack(images), total_reward, "condition")
+                return mk_output("condition")
             if terminated:
-                return cls(np.stack(images), total_reward, "terminated")
+                return mk_output("terminated")
             if truncated:
-                return cls(np.stack(images), total_reward, "truncated")
+                return mk_output("truncated")
 
-        return cls(np.stack(images), total_reward, "truncated")
+        return mk_output("truncated")
 
 
 class BottomRightAgent:

@@ -55,10 +55,10 @@ def get_agent(
         learning_rate=learning_rate,
         # learning_rate=lambda f: 0.001 * f,
         # learning_rate=lambda f: 0.01 * f ** 1.5,
-        policy_kwargs=dict(net_arch=net_arch, optimizer_kwargs=dict(weight_decay=weight_decay)),
+        policy_kwargs=dict(net_arch=net_arch),  # optimizer_kwargs=dict(weight_decay=weight_decay)),
         n_steps=n_steps,
         batch_size=batch_size,
-        n_epochs=n_epochs,
+        # n_epochs=n_epochs,
 
         # buffer_size=10_000,
         # learning_starts=5_000,
@@ -80,7 +80,7 @@ def get_agent(
                  callback=WandbCallback(verbose=2) if use_wandb else None)
 
     # Evaluate the agent
-    perfs = Perfs.from_agent(policy, episodes=300, env_size=env_size,
+    perfs = Perfs.from_agent(policy, episodes=100, env_size=env_size,
                              net_arch=net_arch,
                              learning_rate=learning_rate,
                              steps=total_timesteps)
@@ -95,7 +95,7 @@ def get_agent(
     # Save the agent
     if save:
         name = (
-            f"agents/ppo_{env_size}env_{steps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_"
+            f"agents/ppo_{env_size}env_{total_timesteps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_"
             f"{perfs.general_br_freq * 1000:03.0f}br_wrong_{bottom_right_odds}odds_{time.time():.0f}")
         perfs.info["file"] = name
         policy.save(name)
