@@ -115,6 +115,8 @@ class SimpleEnv(MiniGridEnv):
 
         self.add_walls()
 
+
+
     def add_walls(self):
         pass
 
