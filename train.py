@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import random
 import time
+from pprint import pprint
 from typing import Type
 
 import click
@@ -35,6 +37,7 @@ def get_agent(
     policy_kwargs: dict | None = None,
     can_turn: bool = True,
     # weight_decay: float = 0,
+    seed: int | None = None,
 ):
     """Train a PPO agent on the SimpleEnv environment"""
 
@@ -63,6 +66,10 @@ def get_agent(
         n_envs=n_envs,
     )
 
+    # Set the random seed
+    if seed is None:
+        seed = random.randint(0, 2 ** 32 - 1)
+
     if policy_kwargs is None:
         policy_kwargs = {}
 
@@ -76,7 +83,7 @@ def get_agent(
         learning_rate=learning_rate,
         # learning_rate=lambda f: 0.001 * f,
         # learning_rate=lambda f: 0.01 * f ** 1.5,
-        policy_kwargs=dict(**policy_kwargs),  # optimizer_kwargs=dict(weight_decay=weight_decay)),
+        policy_kwargs=policy_kwargs,  # optimizer_kwargs=dict(weight_decay=weight_decay)),
         # arch_kwargs=dict(net_arch=net_arch, features_extractor_class=BaseFeaturesExtractor),
         n_steps=n_steps,
         batch_size=batch_size,
@@ -90,6 +97,7 @@ def get_agent(
         gamma=1,
         tensorboard_log="run_logs",
         device="cpu",
+        seed=seed,
     )
     if verbose >= 1:
         # nb of parameters
@@ -122,7 +130,11 @@ def get_agent(
             "general_env": perfs.general_env,
             "br_env": perfs.br_env,
             "general_br_freq": perfs.general_br_freq,
+            "br_prob": bottom_right_prob,
+            "can_turn": can_turn,
+            "env_size": env_size,
         })
+        wandb.finish()
 
     # Save the agent
     if save:
@@ -133,7 +145,8 @@ def get_agent(
             "br": perfs.br_env,
             "br_wrong": perfs.general_br_freq,
             "br_prob": bottom_right_prob,
-            "time": time.time(),
+            "seed": seed,
+            "_turn": "can" if can_turn else "cannot",
         }
 
         name = ""
@@ -151,7 +164,7 @@ def get_agent(
             print(f"Saved model to {name}")
 
     if verbose >= 1:
-        print(perfs)
+        pprint(perfs)
 
     return policy, perfs
 
