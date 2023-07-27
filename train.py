@@ -68,7 +68,7 @@ def get_agent(
 
     # Set the random seed
     if seed is None:
-        seed = random.randint(0, 2 ** 32 - 1)
+        seed = random.randint(0, 2**32 - 1)
 
     if policy_kwargs is None:
         policy_kwargs = {}

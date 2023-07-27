@@ -355,11 +355,16 @@ class BottomRightAgent:
         # Find where the agent is
         for i, j in np.ndindex(size, size):
             if self.can_turn:
-                if map[i, j] in (1, 2, 3, 4):  # Those numbers refer to OneHotFullObsWrapper.MAPPING
+                if map[i, j] in (
+                        1,
+                        2,
+                        3,
+                        4,
+                ):  # Those numbers refer to OneHotFullObsWrapper.MAPPING
                     agent_pos = (i, j)
                     break
             else:
-                if map[i, j] == 1:  # This number refers to OneHotFullObsWrapper.MAPPING_NO_TURN
+                if (map[i, j] == 1):  # This number refers to OneHotFullObsWrapper.MAPPING_NO_TURN
                     agent_pos = (i, j)
                     break
         else:
@@ -389,7 +394,7 @@ class BottomRightAgent:
             # Numbers from minigrid.DIR_TO_VEC
             if agent_pos[0] == size - 1:  # on right wall
                 return 1, None  # go down
-            return 0, None # go right
+            return 0, None  # go right
 
 
 @dataclass
@@ -466,11 +471,13 @@ def eval_agent(
     fails = []
     success_imgs = []
     for _ in range(episodes):
-        trajectory = Trajectory.from_policy(policy,
-                                            env,
-                                            max_len=episode_len,
-                                            end_condition=end_condition,
-                                            no_images=True)
+        trajectory = Trajectory.from_policy(
+            policy,
+            env,
+            max_len=episode_len,
+            end_condition=end_condition,
+            no_images=True,
+        )
 
         if end_condition is None:
             success = trajectory.ended == "terminated"
