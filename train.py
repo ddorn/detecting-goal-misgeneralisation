@@ -11,31 +11,30 @@ from joblib import Parallel, delayed
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-
-import wandb
 from wandb.integration.sb3 import WandbCallback
 
+import wandb
 from main import wrap_env, SimpleEnv, uniform_distribution, Perfs
 
 
 def get_agent(
-        bottom_right_prob: float | None = None,
-        total_timesteps: int = 50_000,
-        n_envs: int = 1,
-        env_size: int = 5,
-        save: bool = True,
-        verbose: int = 2,
-        use_wandb: bool = False,
-        *,
-        net_arch: tuple = (30, 10),
-        learning_rate: float = 0.001,
-        n_epochs: int = 40,
-        n_steps: int = 6_000,
-        batch_size: int = 6_000,
-        policy: str | Type[ActorCriticPolicy] = "MlpPolicy",
-        policy_kwargs: dict | None = None,
-        # weight_decay: float = 0,
+    bottom_right_prob: float | None = None,
+    total_timesteps: int = 50_000,
+    n_envs: int = 1,
+    env_size: int = 5,
+    save: bool = True,
+    verbose: int = 2,
+    use_wandb: bool = False,
+    *,
+    net_arch: tuple = (30, 10),
+    learning_rate: float = 0.001,
+    n_epochs: int = 40,
+    n_steps: int = 6_000,
+    batch_size: int = 6_000,
+    policy: str | Type[ActorCriticPolicy] = "MlpPolicy",
+    policy_kwargs: dict | None = None,
+    can_turn: bool = True,
+    # weight_decay: float = 0,
 ):
     """Train a PPO agent on the SimpleEnv environment"""
 
@@ -45,7 +44,8 @@ def get_agent(
         goal_distrib = (-2, -2)
     elif bottom_right_prob is not None:
         # There are (env_size-2)**2-1 other positions
-        goal_distrib[env_size - 2, env_size - 2] = bottom_right_prob / (1 - bottom_right_prob) * ((env_size - 2) ** 2 - 1)
+        goal_distrib[env_size - 2, env_size - 2] = (bottom_right_prob / (1 - bottom_right_prob) *
+                                                    ((env_size - 2)**2 - 1))
     env = make_vec_env(
         lambda: wrap_env(
             SimpleEnv(
@@ -56,7 +56,10 @@ def get_agent(
                 # agent_start_pos=(1, 1),
                 # agent_start_dir=0,
                 # render_mode='rgb_array'
-            )),
+                can_turn=can_turn,
+            ),
+            can_turn=can_turn,
+        ),
         n_envs=n_envs,
     )
 
@@ -78,7 +81,6 @@ def get_agent(
         n_steps=n_steps,
         batch_size=batch_size,
         n_epochs=n_epochs,
-
         # buffer_size=10_000,
         # learning_starts=5_000,
         # gradient_steps=1,
@@ -93,21 +95,27 @@ def get_agent(
         # nb of parameters
         print("Number of parameters", sum(p.numel() for p in policy.policy.parameters()))
 
-
     # Train the agent
     if use_wandb:
         wandb.init(
             sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
             save_code=True,
         )
-    policy.learn(total_timesteps=total_timesteps,
-                 callback=WandbCallback(verbose=2) if use_wandb else None)
+    policy.learn(
+        total_timesteps=total_timesteps,
+        callback=WandbCallback(verbose=2) if use_wandb else None,
+    )
 
     # Evaluate the agent
-    perfs = Perfs.from_agent(policy, episodes=100, env_size=env_size,
-                             net_arch=net_arch,
-                             learning_rate=learning_rate,
-                             steps=total_timesteps)
+    perfs = Perfs.from_agent(
+        policy,
+        episodes=100,
+        env_size=env_size,
+        can_turn=can_turn,
+        net_arch=net_arch,
+        learning_rate=learning_rate,
+        steps=total_timesteps,
+    )
 
     if use_wandb:
         wandb.log({
@@ -118,9 +126,24 @@ def get_agent(
 
     # Save the agent
     if save:
-        name = (
-            f"agents/ppo_{env_size}env_{total_timesteps}steps_{perfs.general_env * 1000:03.0f}gen_{perfs.br_env * 1000:03.0f}br_"
-            f"{perfs.general_br_freq * 1000:03.0f}br_wrong_{bottom_right_odds}odds_{time.time():.0f}")
+        parts = {
+            "env": env_size,
+            "steps": total_timesteps,
+            "gen": perfs.general_env,
+            "br": perfs.br_env,
+            "br_wrong": perfs.general_br_freq,
+            "br_prob": bottom_right_prob,
+            "time": time.time(),
+        }
+
+        name = ""
+        for k, v in parts.items():
+            if isinstance(v, float):
+                name += f"{v * 1000:03.0f}{k}_"
+            else:
+                name += f"{v}{k}_"
+        name = f"agents/ppo_{name[:-1]}.zip"
+
         perfs.info["file"] = name
         policy.save(name)
         json.dump(dataclasses.asdict(perfs), open(name + ".json", "w"))
@@ -135,7 +158,11 @@ def get_agent(
 
 @click.command()
 @click.option("--steps", default=50_000, help="Number of steps to train the agent for")
-@click.option("--br-odds", default=1, help="Odds of the goal being in the bottom right corner. 3 means three times more likely than not.")
+@click.option(
+    "--br-prob",
+    default=1.0,
+    help="Probability of the goal being in the bottom right corner vs elsewhere",
+)
 @click.option("--n-agents", default=1, help="Number of agents to train")
 @click.option("--n-envs", default=1, help="Number of environments to train on")
 @click.option("--jobs", default=1, help="Number of jobs to run in parallel")
@@ -148,13 +175,20 @@ def get_agent(
     type=str,
     help="Neural network architecture, as a string of integers separated by colons (ex. 30:10)",
 )
-def train(steps: int, br_odds: int, n_agents: int, n_envs: int, jobs: int, env_size: int,
-            verbose: int,
-          arch: tuple):
+def train(
+    steps: int,
+    br_prob: float,
+    n_agents: int,
+    n_envs: int,
+    jobs: int,
+    env_size: int,
+    verbose: int,
+    arch: tuple,
+):
     """Train a PPO agent on the SimpleEnv environment"""
 
     def get():
-        get_agent(br_odds, steps, n_envs, net_arch=arch, env_size=env_size, verbose=verbose)
+        get_agent(br_prob, steps, n_envs, net_arch=arch, env_size=env_size, verbose=verbose)
         # Not returning anything to avoid pickling the agent for nothing
         # Joblib also throws an error if the agent is returned (cannot pickle _thread.lock objects)
 

@@ -24,7 +24,7 @@ config = dict(
         # second_layer_size=dict(value=15),
         # weight_decay=dict(min=0.0, max=0.01),
         # weight_decay=dict(value=0.0),
-    )
+    ),
 )
 
 
@@ -32,11 +32,10 @@ def do_run():
     with wandb.init() as run:
         config = run.config
         policy, perfs = train.get_agent(
-            bottom_right_odds=1 / 24,
+            bottom_right_prob=None,
             total_timesteps=config.total_timesteps,
             env_size=config.env_size,
             use_wandb=True,
-
             net_arch=(config.first_layer_size, config.second_layer_size),
             learning_rate=config.lr,
             n_epochs=config.n_epochs,
