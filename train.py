@@ -114,6 +114,8 @@ def get_agent(
         callback=WandbCallback(verbose=2) if use_wandb else None,
     )
 
+    return
+
     # Evaluate the agent
     perfs = Perfs.from_agent(
         policy,
@@ -181,6 +183,12 @@ def get_agent(
 @click.option("--jobs", default=1, help="Number of jobs to run in parallel")
 @click.option("--env-size", default=5, help="Size of the environment")
 @click.option("-v", "--verbose", count=True, help="Verbosity level (0-2)")
+@click.option("--can-turn/--wasd", default=True, help="Whether the agent moves forward+rotate or moves in 4 directions")
+@click.option("--n-epochs", default=40, help="Number of epochs per update")
+@click.option("--steps-per-update", default=6_000, help="Number of steps per update")
+@click.option("--batch-size", default=400, help="Number of steps per update")
+@click.option("--lr", default=0.001, help="Learning rate")
+@click.option("--wandb", is_flag=True, help="Whether to use wandb")
 @click.option(
     "--arch",
     default="30:10",
@@ -196,12 +204,31 @@ def train(
     jobs: int,
     env_size: int,
     verbose: int,
-    arch: tuple,
+    can_turn: bool,
+    n_epochs: int,
+    steps_per_update: int,
+    batch_size: int,
+    lr: float,
+    wandb: bool,
+    arch: tuple[int, ...],
 ):
     """Train a PPO agent on the SimpleEnv environment"""
 
     def get():
-        get_agent(br_prob, steps, n_envs, net_arch=arch, env_size=env_size, verbose=verbose)
+        get_agent(
+            bottom_right_prob=br_prob,
+            total_timesteps=steps,
+            n_envs=n_envs,
+            env_size=env_size,
+            verbose=verbose,
+            net_arch=arch,
+            learning_rate=lr,
+            n_epochs=n_epochs,
+            n_steps=steps_per_update // n_envs,
+            batch_size=batch_size,
+            can_turn=can_turn,
+            use_wandb=wandb,
+        )
         # Not returning anything to avoid pickling the agent for nothing
         # Joblib also throws an error if the agent is returned (cannot pickle _thread.lock objects)
 
@@ -212,4 +239,24 @@ def train(
 
 
 if __name__ == "__main__":
-    train()
+    # train()
+    env_size = 7
+
+    # For bottom_right_odds, None means uniform, 3 means three times more likely to be bottom right than anywhere else
+    for _ in range(1):
+        policy, perfs = get_agent(
+            bottom_right_prob=0.5,
+            total_timesteps=100_000,
+            net_arch=(10, 10),
+            n_epochs=40,
+            n_steps=8_000 // 10,
+            batch_size=400,
+            learning_rate=0.001,
+            env_size=env_size,
+            n_envs=10,
+            can_turn=False,
+            # policy=transformer.CustomActorCriticPolicy,
+            # policy_kwargs=dict(features_extractor_class=transformer.CustomFeaturesExtractor, arch=dict(d_model=20, d_head=6, heads=3, layers=1)),
+            # use_wandb=True,
+            save=True,
+        )
