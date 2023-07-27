@@ -9,6 +9,7 @@ import numpy as np
 import plotly.express as px
 from gymnasium import ActionWrapper, ObservationWrapper
 from gymnasium.core import WrapperObsType, ActType, ObsType
+from minigrid.core.constants import DIR_TO_VEC
 from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
 from minigrid.core.world_object import Goal, Lava
@@ -204,7 +205,7 @@ class OneHotFullObsWrapper(ObservationWrapper):
 
     def observation(self, observation: WrapperObsType):
         img = observation["image"]
-        out = np.zeros((img.shape[0], img.shape[1], self.dim))
+        out = np.zeros((img.shape[0], img.shape[1], self.dim), dtype=bool)
 
         for i in range(img.shape[0]):
             for j in range(img.shape[1]):
@@ -300,17 +301,22 @@ class Trajectory:
         end_condition: Callable[[dict], bool] | None = None,
         no_images: bool = False,
     ) -> Trajectory:
-        """Run the policy in the environment and return the trajectory."""
+        """Run the policy in the environment and return the trajectory.
+
+        Args:
+            policy: The policy to use.
+            env: The environment to run the policy in.
+            max_len: The maximum number of steps to run the policy for.
+            end_condition: A function that takes the locals() dict and returns True if the trajectory should end.
+            no_images: If true, only the initial is returned.
+        """
         assert env.render_mode == "rgb_array"
 
         def mk_output(ended: Literal["truncated", "terminated", "condition"]) -> Trajectory:
-            if images:
-                return cls(np.stack(images), total_reward, ended)
-            else:
-                return cls(np.zeros((0, 0, 0, 0)), total_reward, ended)
+            return cls(np.stack(images), total_reward, ended)
 
         obs, _info = env.reset()
-        images = [env.render()] if not no_images else []
+        images = [env.render()]
         total_reward = 0
         for step in range(max_len):
             action, _states = policy.predict(obs, deterministic=True)
@@ -337,8 +343,10 @@ class Trajectory:
 class BottomRightAgent:
     """Baseline agent that always goes to the bottom right corner."""
 
-    @staticmethod
-    def predict(obs, deterministic=True):
+    def __init__(self, can_turn: bool = True):
+        self.can_turn = can_turn
+
+    def predict(self, obs, deterministic=True):
         assert len(obs.shape) == 3
         size = obs.shape[0]
 
@@ -346,29 +354,42 @@ class BottomRightAgent:
 
         # Find where the agent is
         for i, j in np.ndindex(size, size):
-            if map[i, j] in (1, 2, 3, 4):
-                agent_pos = (i, j)
-                break
+            if self.can_turn:
+                if map[i, j] in (1, 2, 3, 4):  # Those numbers refer to OneHotFullObsWrapper.MAPPING
+                    agent_pos = (i, j)
+                    break
+            else:
+                if map[i, j] == 1:  # This number refers to OneHotFullObsWrapper.MAPPING_NO_TURN
+                    agent_pos = (i, j)
+                    break
+        else:
+            raise ValueError("Could not find the agent position")
 
-        # noinspection PyUnboundLocalVariable
-        direction = map[agent_pos] - 1  # between 0 and 3: right, down, left, up
+        if self.can_turn:
+            direction = map[agent_pos] - 1  # between 0 and 3: right, down, left, up
 
-        LEFT = 0, None
-        RIGHT = 1, None
-        FORWARD = 2, None
+            LEFT = 0, None
+            RIGHT = 1, None
+            FORWARD = 2, None
 
-        if direction == 0:
-            if agent_pos[0] == size - 1:
-                return RIGHT
-            return FORWARD
-        elif direction == 1:
-            if agent_pos[1] == size - 1:
+            if direction == 0:
+                if agent_pos[0] == size - 1:
+                    return RIGHT
+                return FORWARD
+            elif direction == 1:
+                if agent_pos[1] == size - 1:
+                    return LEFT
+                return FORWARD
+            elif direction == 2:
                 return LEFT
-            return FORWARD
-        elif direction == 2:
-            return LEFT
-        elif direction == 3:
-            return RIGHT
+            elif direction == 3:
+                return RIGHT
+
+        else:
+            # Numbers from minigrid.DIR_TO_VEC
+            if agent_pos[0] == size - 1:  # on right wall
+                return 1, None  # go down
+            return 0, None # go right
 
 
 @dataclass
@@ -388,7 +409,10 @@ class Perfs:
         can_turn: bool = True,
         **info,
     ):
-        max_len = env_size**2
+        # Should be enough to reach the goal
+        # Higher values make the evaluation much slower,
+        # because of trajectories where the agent is stuck.
+        max_len = env_size * 4
         br_success_rate = eval_agent(policy,
                                      bottom_right_env(env_size, can_turn),
                                      episodes,
@@ -445,7 +469,8 @@ def eval_agent(
         trajectory = Trajectory.from_policy(policy,
                                             env,
                                             max_len=episode_len,
-                                            end_condition=end_condition)
+                                            end_condition=end_condition,
+                                            no_images=True)
 
         if end_condition is None:
             success = trajectory.ended == "terminated"
