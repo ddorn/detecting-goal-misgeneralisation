@@ -18,10 +18,10 @@ from torch import nn
 class MultiAttention(nn.Module):
 
     def __init__(
-            self,
-            d_model: int,
-            heads: int = 8,
-            d_head: int = 64,
+        self,
+        d_model: int,
+        heads: int = 8,
+        d_head: int = 64,
     ):
         """
         A simple multi-head attention layer without causal mask.
@@ -44,14 +44,16 @@ class MultiAttention(nn.Module):
         self.out = nn.Linear(heads * d_head, d_model)
 
     def separate_heads(
-            self, x: Float[Tensor, "batch token head_x_d_head"]
-    ) -> Float[Tensor, "token all_token head d_head"]:
+        self,
+        x: Float[Tensor,
+                 "batch token head_x_d_head"]) -> Float[Tensor, "token all_token head d_head"]:
         """Utility function to convert the key/queries/values into a tensor with a head dimension."""
         return einops.rearrange(x,
                                 "batch token (head d_head) -> batch token head d_head",
                                 head=self.heads)
 
-    def forward(self, x: Float[Tensor, "batch token d_model"]) -> Float[Tensor, "batch token d_model"]:
+    def forward(self, x: Float[Tensor,
+                               "batch token d_model"]) -> Float[Tensor, "batch token d_model"]:
         qs = self.queries(x)  # (batch, token, heads * d_head)
         q = self.separate_heads(qs)  # (batch, token, head, d_head)
 
@@ -80,10 +82,10 @@ class MultiAttention(nn.Module):
 class MLP(nn.Sequential):
 
     def __init__(
-            self,
-            d_model: int,
-            hidden_multiplier: int = 4,
-            activation: Type[nn.Module] = nn.ReLU,
+        self,
+        d_model: int,
+        hidden_multiplier: int = 4,
+        activation: Type[nn.Module] = nn.ReLU,
     ):
         """
         A fully connected feed-forward network with one hidden layer.
@@ -102,13 +104,13 @@ class MLP(nn.Sequential):
 class Transformer(nn.Module):
 
     def __init__(
-            self,
-            vocab_size_in: int,
-            context_size: int,
-            d_model: int = 64,
-            layers: int = 4,
-            heads: int = 4,
-            d_head: int = 16,
+        self,
+        vocab_size_in: int,
+        context_size: int,
+        d_model: int = 64,
+        layers: int = 4,
+        heads: int = 4,
+        d_head: int = 16,
     ):
         """A simple transformer with no unembedding"""
         super().__init__()
@@ -130,7 +132,6 @@ class Transformer(nn.Module):
         ])
 
     def forward(self, x: Int[Tensor, "batch token"]) -> Float[Tensor, "batch vocab_out"]:
-
         stream = self.embedding(x) + self.positional_encoding(torch.arange(x.shape[-1]))
 
         for module in self.components:
@@ -143,6 +144,7 @@ class Transformer(nn.Module):
 
 
 class CustomFeaturesExtractor(BaseFeaturesExtractor):
+
     def __init__(self, observation_space: spaces.MultiBinary):
         assert isinstance(observation_space, spaces.MultiBinary), observation_space
         assert len(observation_space.shape) == 3, observation_space.shape
@@ -168,11 +170,11 @@ class CustomNetwork(nn.Module):
     """
 
     def __init__(
-            self,
-            feature_dim: int,
-            observation_space: spaces.MultiBinary,
-            use_separate_networks: bool = False,
-            **arch_kwargs,
+        self,
+        feature_dim: int,
+        observation_space: spaces.MultiBinary,
+        use_separate_networks: bool = False,
+        **arch_kwargs,
     ):
         assert isinstance(observation_space, spaces.MultiBinary), observation_space
         super().__init__()
@@ -213,13 +215,14 @@ class CustomNetwork(nn.Module):
 
 
 class CustomActorCriticPolicy(ActorCriticPolicy):
+
     def __init__(
-            self,
-            observation_space: spaces.Space,
-            action_space: spaces.Space,
-            lr_schedule: Callable[[float], float],
-            *args,
-            **kwargs,
+        self,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        lr_schedule: Callable[[float], float],
+        *args,
+        **kwargs,
     ):
         assert isinstance(observation_space, spaces.MultiBinary), observation_space
         self.arch_kwargs = kwargs.pop("arch", {})
@@ -239,6 +242,5 @@ class CustomActorCriticPolicy(ActorCriticPolicy):
     def _build_mlp_extractor(self) -> None:
         print(self.observation_space)
         print("Features dim", self.features_dim)
-        self.mlp_extractor = CustomNetwork(self.features_dim,
-                                           self.observation_space,
+        self.mlp_extractor = CustomNetwork(self.features_dim, self.observation_space,
                                            **self.arch_kwargs)
