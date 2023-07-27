@@ -5,15 +5,14 @@ from typing import Type
 
 import einops
 import numpy as np
+import torch
 import torch as th
 from gymnasium import spaces
 from jaxtyping import Float, Int
-from stable_baselines3 import PPO
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from torch import Tensor
 from torch import nn
-import torch
 
 
 class MultiAttention(nn.Module):
@@ -140,7 +139,7 @@ class Transformer(nn.Module):
 
         # return stream[:, 0]
         return stream.flatten(-2)
-        return stream.mean(dim=-2)  # Average over the tokens
+        # return stream.mean(dim=-2)  # Average over the tokens
 
 
 class CustomFeaturesExtractor(BaseFeaturesExtractor):
@@ -172,39 +171,44 @@ class CustomNetwork(nn.Module):
             self,
             feature_dim: int,
             observation_space: spaces.MultiBinary,
+            use_separate_networks: bool = False,
             **arch_kwargs,
     ):
         assert isinstance(observation_space, spaces.MultiBinary), observation_space
         super().__init__()
 
-        print(observation_space.shape, "observation_space.ea")
+        self.use_separete_networks = use_separate_networks
         self.observation_space = observation_space
         vocab_size_in = observation_space.shape[-1]
-        print(feature_dim, vocab_size_in, arch_kwargs)
 
         # Policy network
         self.policy_net = Transformer(vocab_size_in, feature_dim, **arch_kwargs)
         # Value network
-        # self.value_net = Transformer(vocab_size_in, feature_dim, **arch_kwargs)
+        if use_separate_networks:
+            self.value_net = Transformer(vocab_size_in, feature_dim, **arch_kwargs)
+        else:
+            self.value_net = self.policy_net
 
         # IMPORTANT:
         # Save output dimensions, used to create the distributions
         self.latent_dim_pi = self.policy_net.d_model * feature_dim
-        self.latent_dim_vf = self.policy_net.d_model * feature_dim
+        self.latent_dim_vf = self.value_net.d_model * feature_dim
 
     def forward(self, features: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
         """
         :return: (th.Tensor, th.Tensor) latent_policy, latent_value of the specified network.
             If all layers are shared, then ``latent_policy == latent_value``
         """
-        return [self.forward_actor(features)] * 2
-        return self.forward_actor(features), self.forward_critic(features)
+        if self.use_separete_networks:
+            return self.forward_actor(features), self.forward_critic(features)
+
+        out = self.forward_actor(features)
+        return out, out
 
     def forward_actor(self, features: th.Tensor) -> th.Tensor:
         return self.policy_net(features)
 
     def forward_critic(self, features: th.Tensor) -> th.Tensor:
-        return self.policy_net(features)
         return self.value_net(features)
 
 
