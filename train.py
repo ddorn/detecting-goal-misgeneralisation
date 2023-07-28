@@ -38,8 +38,12 @@ def get_agent(
     can_turn: bool = True,
     # weight_decay: float = 0,
     seed: int | None = None,
+    return_perfs: bool = True,
 ):
     """Train a PPO agent on the SimpleEnv environment"""
+
+    if not return_perfs:
+        assert not save, "Cannot save the agent if return_perfs is False"
 
     # Define the training environment
     goal_distrib = uniform_distribution((env_size - 1, env_size - 1))
@@ -114,7 +118,8 @@ def get_agent(
         callback=WandbCallback(verbose=2) if use_wandb else None,
     )
 
-    return
+    if not return_perfs:
+        return policy
 
     # Evaluate the agent
     perfs = Perfs.from_agent(
@@ -241,22 +246,23 @@ def train(
 if __name__ == "__main__":
     # train()
     env_size = 7
+    n_envs = 50
 
     # For bottom_right_odds, None means uniform, 3 means three times more likely to be bottom right than anywhere else
-    for _ in range(1):
-        policy, perfs = get_agent(
-            bottom_right_prob=0.5,
-            total_timesteps=100_000,
-            net_arch=(10, 10),
-            n_epochs=40,
-            n_steps=8_000 // 10,
-            batch_size=400,
-            learning_rate=0.001,
-            env_size=env_size,
-            n_envs=10,
-            can_turn=False,
-            # policy=transformer.CustomActorCriticPolicy,
-            # policy_kwargs=dict(features_extractor_class=transformer.CustomFeaturesExtractor, arch=dict(d_model=20, d_head=6, heads=3, layers=1)),
-            # use_wandb=True,
-            save=True,
-        )
+    get_agent(
+        bottom_right_prob=0.5,
+        total_timesteps=100_000,
+        net_arch=(10, 10),
+        n_epochs=40,
+        n_steps=8_000 // n_envs,
+        batch_size=400,
+        learning_rate=0.001,
+        env_size=env_size,
+        n_envs=n_envs,
+        can_turn=False,
+        # policy=transformer.CustomActorCriticPolicy,
+        # policy_kwargs=dict(features_extractor_class=transformer.CustomFeaturesExtractor, arch=dict(d_model=20, d_head=6, heads=3, layers=1)),
+        # use_wandb=True,
+        save=False,
+        return_perfs=False,
+    )
