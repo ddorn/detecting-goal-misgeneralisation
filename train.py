@@ -4,11 +4,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import random
-import time
 from pprint import pprint
-from typing import Type
+from typing import Type, Callable
 
 import click
+import gymnasium as gym
 from joblib import Parallel, delayed
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
@@ -16,18 +16,15 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from wandb.integration.sb3 import WandbCallback
 
 import wandb
-from main import wrap_env, SimpleEnv, uniform_distribution, Perfs
+from main import Perfs, random_goal_env
 
 
 def get_agent(
-    bottom_right_prob: float | None = None,
-    total_timesteps: int = 50_000,
+    env: Callable[[], gym.Env],
+    total_timesteps: int = 100_000,
     n_envs: int = 1,
-    env_size: int = 5,
-    save: bool = True,
-    verbose: int = 2,
-    use_wandb: bool = False,
     *,
+    # Hyperparameters
     net_arch: tuple = (30, 10),
     learning_rate: float = 0.001,
     n_epochs: int = 40,
@@ -35,40 +32,18 @@ def get_agent(
     batch_size: int = 6_000,
     policy: str | Type[ActorCriticPolicy] = "MlpPolicy",
     policy_kwargs: dict | None = None,
-    can_turn: bool = True,
     # weight_decay: float = 0,
     seed: int | None = None,
+    # Meta-options
+    verbose: int = 2,
+    use_wandb: bool = False,
+    save: bool = True,
     return_perfs: bool = True,
 ):
-    """Train a PPO agent on the SimpleEnv environment"""
+    """Train a PPO agent on given environment"""
 
-    if not return_perfs:
-        assert not save, "Cannot save the agent if return_perfs is False"
-
-    # Define the training environment
-    goal_distrib = uniform_distribution((env_size - 1, env_size - 1))
-    if bottom_right_prob == 1:
-        goal_distrib = (-2, -2)
-    elif bottom_right_prob is not None:
-        # There are (env_size-2)**2-1 other positions
-        goal_distrib[env_size - 2, env_size - 2] = (bottom_right_prob / (1 - bottom_right_prob) *
-                                                    ((env_size - 2)**2 - 1))
-    env = make_vec_env(
-        lambda: wrap_env(
-            SimpleEnv(
-                size=env_size,
-                goal_pos=goal_distrib,
-                # goal_pos=(-2, -2),
-                agent_start_pos=None,
-                # agent_start_pos=(1, 1),
-                # agent_start_dir=0,
-                # render_mode='rgb_array'
-                can_turn=can_turn,
-            ),
-            can_turn=can_turn,
-        ),
-        n_envs=n_envs,
-    )
+    if not return_perfs and save:
+        raise ValueError("Cannot save agent if not returning perfs")
 
     # Set the random seed
     if seed is None:
@@ -82,7 +57,7 @@ def get_agent(
     # Define the policy network
     policy = PPO(
         policy,
-        env,
+        make_vec_env(env, n_envs=n_envs, seed=seed),
         verbose=verbose >= 2,
         learning_rate=learning_rate,
         # learning_rate=lambda f: 0.001 * f,
@@ -92,19 +67,13 @@ def get_agent(
         n_steps=n_steps,
         batch_size=batch_size,
         n_epochs=n_epochs,
-        # buffer_size=10_000,
-        # learning_starts=5_000,
-        # gradient_steps=1,
-        # target_update_interval=1_000,
-        # exploration_fraction=0.2,
-        # exploration_final_eps=0.2,
-        gamma=1,
         tensorboard_log="run_logs",
         device="cpu",
         seed=seed,
     )
+
+    # Show nb of parameters
     if verbose >= 1:
-        # nb of parameters
         print("Number of parameters", sum(p.numel() for p in policy.policy.parameters()))
 
     # Train the agent
@@ -137,23 +106,17 @@ def get_agent(
             "general_env": perfs.general_env,
             "br_env": perfs.br_env,
             "general_br_freq": perfs.general_br_freq,
-            "br_prob": bottom_right_prob,
-            "can_turn": can_turn,
-            "env_size": env_size,
         })
         wandb.finish()
 
     # Save the agent
     if save:
         parts = {
-            "env": env_size,
+            "env": env.__name__,
             "steps": total_timesteps,
             "gen": perfs.general_env,
             "br": perfs.br_env,
             "br_wrong": perfs.general_br_freq,
-            "br_prob": bottom_right_prob,
-            "seed": seed,
-            "_turn": "can" if can_turn else "cannot",
         }
 
         name = ""
@@ -188,7 +151,6 @@ def get_agent(
 @click.option("--jobs", default=1, help="Number of jobs to run in parallel")
 @click.option("--env-size", default=5, help="Size of the environment")
 @click.option("-v", "--verbose", count=True, help="Verbosity level (0-2)")
-@click.option("--can-turn/--wasd", default=True, help="Whether the agent moves forward+rotate or moves in 4 directions")
 @click.option("--n-epochs", default=40, help="Number of epochs per update")
 @click.option("--steps-per-update", default=6_000, help="Number of steps per update")
 @click.option("--batch-size", default=400, help="Number of steps per update")
@@ -209,7 +171,6 @@ def train(
     jobs: int,
     env_size: int,
     verbose: int,
-    can_turn: bool,
     n_epochs: int,
     steps_per_update: int,
     batch_size: int,
@@ -221,17 +182,15 @@ def train(
 
     def get():
         get_agent(
-            bottom_right_prob=br_prob,
+            lambda: random_goal_env(env_size, br_prob),
             total_timesteps=steps,
             n_envs=n_envs,
-            env_size=env_size,
             verbose=verbose,
             net_arch=arch,
             learning_rate=lr,
             n_epochs=n_epochs,
             n_steps=steps_per_update // n_envs,
             batch_size=batch_size,
-            can_turn=can_turn,
             use_wandb=wandb,
         )
         # Not returning anything to avoid pickling the agent for nothing
@@ -243,8 +202,8 @@ def train(
         get()
 
 
-if __name__ == "__main__":
-    # train()
+
+def test():
     env_size = 7
     n_envs = 50
 
@@ -266,3 +225,7 @@ if __name__ == "__main__":
         save=False,
         return_perfs=False,
     )
+
+if __name__ == "__main__":
+    train()
+    # test()

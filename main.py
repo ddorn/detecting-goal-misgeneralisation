@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import TypeVar, Callable, Literal, Union, SupportsFloat, Any
 
 import einops
 import gymnasium as gym
 import numpy as np
 import plotly.express as px
-from gymnasium import ActionWrapper, ObservationWrapper
-from gymnasium.core import WrapperObsType, ActType, ObsType
-from minigrid.core.constants import DIR_TO_VEC
-from minigrid.core.grid import Grid
-from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import Goal, Lava
-from minigrid.minigrid_env import MiniGridEnv
-from minigrid.wrappers import FullyObsWrapper
+import pygame
+import pygame.gfxdraw
+from gymnasium import ObservationWrapper
+from gymnasium.core import WrapperObsType, ActType, ObsType, RenderFrame
 from stable_baselines3 import PPO
 
 Pos = tuple[int, int]
@@ -23,7 +20,7 @@ Distribution = Union[dict[T, float], T]
 
 
 def uniform_distribution(
-        bottom_right: tuple[int, int], top_left: tuple[int, int] = (1, 1)) -> dict[Pos, float]:
+        bottom_right: tuple[int, int], top_left: tuple[int, int] = (0, 0)) -> dict[Pos, float]:
     """Returns a uniform distribution over the given rectangle. Bottom and right bounds are not inclusive."""
     return {
         (x, y): 1
@@ -32,291 +29,303 @@ def uniform_distribution(
     }
 
 
-def sample_distribution(distribution: Distribution[T]) -> T:
-    """Sample a distribution.
-
-    If the distribution is a dictionary, the keys are the possible values and the values are the weights
-    of each option. Otherwise, the distribution is assumed to be a single value with probability 1.
-    """
-    if isinstance(distribution, dict):
-        options = list(distribution.keys())
-        probability_sum = sum(distribution.values())
-        probabilities = np.array(list(distribution.values())) / probability_sum
-        index = np.random.choice(len(options), p=probabilities)
-        return options[index]
-    else:
-        return distribution
+@dataclass
+class Cell:
+    label: str
+    color: str | tuple[int, int, int] | None
+    terminates: bool = False
+    reward: float = 0
+    can_overlap: bool = True
+    manual: bool = False
 
 
-class SimpleEnv(MiniGridEnv):
+class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
 
-    def __init__(
+    class Actions(IntEnum):
+        RIGHT = 0
+        DOWN = 1
+        LEFT = 2
+        UP = 3
+
+    DIR_TO_VEC = [
+        # Pointing right (positive X)
+        np.array((1, 0)),
+        # Down (positive Y)
+        np.array((0, 1)),
+        # Pointing left (negative X)
+        np.array((-1, 0)),
+        # Up (negative Y)
+        np.array((0, -1)),
+    ]
+
+    EMPTY_CELL = Cell(".", None)
+    AGENT_CELL = Cell("A", "#E91E63")
+    WALL_CELL = Cell("#", "#607D8B", can_overlap=False)
+    GOAL_CELL = Cell("G", "#8BC34A", True, 1)
+    LAVA_CELL = Cell("L", "#FF5722", True, -1)
+
+    BASE_CELLS = [EMPTY_CELL, AGENT_CELL]
+    ALL_CELLS = BASE_CELLS
+
+    def __init__(self, agent_start: Distribution[Pos] | None, width: int, height: int, max_steps: int | None = None):
+        self.width = width
+        self.height = height
+        self.agent_start = agent_start
+        self.max_steps = max_steps if max_steps is not None else width * height
+
+        self.steps = 0
+        self.agent_pos: tuple[int, int] = (-1, -1)
+        self.grid: np.ndarray  # Defined in make_grid
+        self.make_grid()
+        self.place_agent(self.agent_start)
+
+        self.action_space = gym.spaces.Discrete(len(self.Actions))
+        # self.observation_space = gym.spaces.MultiBinary((width, height, len(self.CellTypes)))
+        self.observation_space = gym.spaces.MultiDiscrete([[len(self.ALL_CELLS)] * width] * height)
+        self.reward_range = -1, 1
+
+        self.render_mode = "rgb_array"
+
+    def __repr__(self):
+
+        out = "\n".join(
+            "".join(self[x, y].label for x in range(self.width))
+            for y in range(self.height)
+        )
+        return f"{self.__class__.__name__}:\n{out}"
+
+    __str__ = __repr__
+
+    def __getitem__(self, item: tuple[int, int]):
+        obj = self.grid[item[0], item[1]]
+        return self.ALL_CELLS[obj]
+
+    def __setitem__(self, item: tuple[int, int], value: Cell):
+        self.grid[item[0], item[1]] = self.ALL_CELLS.index(value)
+
+    def make_grid(self):
+        self.grid = np.zeros((self.width, self.height), dtype="int8")
+
+    def place_agent(self, pos_distribution: Distribution[Pos] | None = None):
+
+        # Remove the agent from the grid
+        if self.agent_pos[0] >= 0:
+            self[self.agent_pos] = self.EMPTY_CELL
+
+        self.agent_pos = self.place_obj(self.AGENT_CELL, pos_distribution)
+
+    def place_obj(self, obj: Cell, pos_distribution: Distribution[Pos] | None = None):
+        """Place an object on an empty cell according to the given distribution."""
+        if isinstance(pos_distribution, tuple):
+            pos = pos_distribution
+
+        # Sample a random position that is empty
+        else:
+            pos_distribution = {
+                (x, y): pos_distribution.get((x, y), 0) if pos_distribution is not None else 1
+                for x in range(self.width)
+                for y in range(self.height)
+                if self[x, y] is self.EMPTY_CELL
+            }
+            assert pos_distribution, "No empty cell to place the object"
+
+            options = list(pos_distribution.keys())
+            probability_sum = sum(pos_distribution.values())
+            probabilities = np.array(list(pos_distribution.values())) / probability_sum
+            index = self.np_random.choice(len(options), p=probabilities)
+            pos = options[index]
+
+        assert self[pos] is self.EMPTY_CELL, f"Position {pos} is not empty: {self[pos]}"
+        self[pos] = obj
+        return pos
+
+    def reset(
             self,
-            size=5,
-            goal_pos: Distribution[Pos] | None = (-2, -2),
-            agent_start_pos: Distribution[Pos] | None = (1, 1),
-            agent_start_dir: Distribution[int] | None = None,
-            max_steps: int | None = None,
-            can_turn: bool = True,
-            **kwargs,
-    ):
-        """
-        A simple square environment with a goal square and an agent. The agent can turn left, turn right, or move forward.
+            *,
+            seed: int | None = None,
+            options: dict[str, Any] | None = None,
+    ) -> tuple[ObsType, dict[str, Any]]:
+        super().reset(seed=seed, options=options)
+        self.steps = 0
+        self.agent_pos = -1, -1
+        self.make_grid()
+        self.place_agent(self.agent_start)
+        return self.grid, {}
 
-        Args:
-            size: The size of the grid. The outer walls are included in this size.
-            goal_pos: The position of the goal square. If a dictionary is given, the keys are the possible positions
-                and the values are the weights of each option. If None is given, the goal square is placed at a random
-                position with equal probability. Otherwise, the goal square is at the given position.
-            agent_start_pos: The initial position of the agent. The same rules apply as for goal_pos.
-            agent_start_dir: The initial direction of the agent (0 = right, 1 = down, 2 = left, 3 = up). The same rules
-                apply as for goal_pos.
-            max_steps: The maximum number of steps the agent can take before the episode is terminated. If None is
-                given, the maximum number of steps is 4 * (size - 2) ** 2.
-            can_turn: If true, controls are left, right, forward. If false, controls are up, right, down, left.
-            **kwargs: Passed to MiniGridEnv.__init__.
-        """
+    def step(
+            self, action: ActType
+    ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
 
-        self.agent_start_pos = agent_start_pos
-        self.agent_start_dir = agent_start_dir
-        self.goal_pos_distribution = goal_pos
-        self.can_turn = can_turn
+        new_pos = tuple(self.agent_pos + self.DIR_TO_VEC[action])
 
-        if max_steps is None:
-            max_steps = 4 * (size - 2) ** 2
+        reward = 0
+        terminated = False
+        truncated = False
+        can_move = True
 
-        super().__init__(
-            MissionSpace(mission_func=lambda: "get to the green goal square"),
-            grid_size=size,
-            see_through_walls=True,
-            max_steps=max_steps,
-            **kwargs,
-        )
+        # If out of bounds, don't move
+        if not (0 <= new_pos[0] < self.width and 0 <= new_pos[1] < self.height):
+            can_move = False
 
-        self.obs_dim = 4 + 3 * can_turn
-        self.observation_space = gym.spaces.MultiBinary(
-            (self.width - 2, self.height - 2, self.obs_dim),
-        )
+        # Handle empty cells
+        elif self.grid[new_pos] == 0:
+            pass
 
-    def _gen_grid(self, width, height):
-        # Create an empty grid
-        self.grid = Grid(width, height)
-
-        # Generate the surrounding walls
-        self.grid.wall_rect(0, 0, width, height)
-
-        # Place a goal square
-        if self.goal_pos_distribution is None:
-            self.goal_pos = self.place_obj(Goal())
+        # Handle objects
         else:
-            self.goal_pos = x, y = sample_distribution(self.goal_pos_distribution)
-            self.put_obj(Goal(), x % width, y % height)
+            obj = self[new_pos]
+            if obj.manual:
+                can_move, reward, terminated = self.handle_object(obj)
+            else:
+                can_move = obj.can_overlap
+                reward = obj.reward
+                terminated = obj.terminates
 
-        # Place the agent
-        if self.agent_start_pos is not None:
-            self.agent_pos = sample_distribution(self.agent_start_pos)
-        else:
-            self.place_agent(rand_dir=False)
-        if self.agent_start_dir is None:
-            self.agent_dir = self._rand_int(0, 4)
-        else:
-            self.agent_dir = sample_distribution(self.agent_start_dir)
+        if can_move:
+            self[self.agent_pos] = self.EMPTY_CELL
+            self.agent_pos = new_pos
+            self[self.agent_pos] = self.AGENT_CELL
 
-        self.add_walls()
+        self.steps += 1
+        if self.steps >= self.max_steps:
+            truncated = True
 
-    def step(self, action: ActType) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
-        last_dist_to_goal = self.dist_to_goal()
+        return self.grid, reward, terminated, truncated, {}
 
-        if self.can_turn:
-            assert action in (0, 1, 2)
-            obs, reward, terminated, truncated, info = super().step(action)
-        else:
-            assert action in (0, 1, 2, 3)
-            # We start by orienting the agent in the direction it wants to go
-            self.agent_dir = action
-            # Then we always move forward
-            obs, reward, terminated, truncated, info = super().step(self.actions.forward)
+    def handle_object(self, obj: Cell) -> tuple[bool, float, bool]:
+        """Returns (can_move, reward, terminated)"""
 
-        # Reward when the agent gets closer to the goal
-        dist_to_goal = self.dist_to_goal()
-        # reward += last_dist_to_goal - dist_to_goal
+    def render(self, resolution: int = 32, plot: bool = False) -> RenderFrame:
+        # Draw borders
+        full_img = pygame.Surface(((self.width + 1) * resolution, (self.height + 1) * resolution))
+        full_img.fill("#37474F")
 
-        return obs, reward, terminated, truncated, info
+        img = full_img.subsurface(resolution // 2, resolution // 2, self.width * resolution, self.height * resolution)
 
-    def dist_to_goal(self):
-        """Manhattan distance from the agent to the goal."""
-        return abs(self.agent_pos[0] - self.goal_pos[0]) + abs(self.agent_pos[1] - self.goal_pos[1])
+        # Draw each cell
+        for x in range(self.width):
+            for y in range(self.height):
+                rect = (x * resolution, y * resolution, resolution, resolution)
+                # Draw checkered background
+                color = "#EBE7E5" if (x + y) % 2 else "#D6D2CF"
+                img.fill(color, rect)
 
-    def gen_obs(self):
-        # This is an optimisation that saved 10% of the runtime
-        # Indeed the observation generated by MiniGridEnv is never used
-        # As we always wrap it into FullyObsWrapper which creates its own 'image'
-        # + we discard the 'direction' and 'mission'.
+                # Draw the object
+                if self[x, y] is self.AGENT_CELL:
+                    cx = int((x + 0.5) * resolution) + 1
+                    cy = int((y + 0.5) * resolution) + 1
+                    radius = int(resolution / 3)
+                    points = [
+                        (cx + radius, cy),
+                        (cx, cy + radius),
+                        (cx - radius, cy),
+                        (cx, cy - radius),
+                    ]
+                    # pygame.draw.polygon(img, color, points)
+                    pygame.draw.circle(img, self[x, y].color, (cx, cy), radius)
 
-        # New try
+                elif self[x, y].color is not None:
+                    img.fill(self[x, y].color, rect)
 
-        obs = np.zeros((self.width, self.height, self.obs_dim), dtype=bool)
+        self.render_extra(img, resolution)
 
-        # for i in range(self.width):
-        #     for j in range(self.height):
-        #         obj = self.grid.get(i, j)
-        #         if obj is None:
-        #             idx = 0
-        #         elif obj.type == "wall":
-        #             idx = 1
-        #         elif obj.type == "goal":
-        #             idx = 2
-        #         else:
-        #             raise ValueError(f"Unknown object type: {obj.type}")
-        #
-        #         obs[i, j, idx] = True
+        # Convert the image to numpy array
+        array = np.array(pygame.surfarray.array3d(full_img))
+        # Flip the y-axis (pygame uses a different coordinate system)
+        array = np.flipud(array)
 
-        # Add the empty space
-        obs[:, :, 0] = True
+        if plot:
+            px.imshow(array).show()
 
-        # Add the goal
-        obs[self.goal_pos[0], self.goal_pos[1], 2] = True
-        obs[self.goal_pos[0], self.goal_pos[1], 0] = False
+        return array
 
-        # Add the agent
-        obs[self.agent_pos[0], self.agent_pos[1], 3 + self.can_turn * self.agent_dir] = True
-        obs[self.agent_pos[0], self.agent_pos[1], 0] = False
-
-        return obs[1:-1, 1:-1, :]
-
-    def add_walls(self):
+    def render_extra(self, img: pygame.Surface, resolution: int) -> None:
         pass
 
 
-class SimpleEnvWithLava(SimpleEnv):
+class RandomGoalEnv(GridEnv):
+    ALL_CELLS = GridEnv.ALL_CELLS + [GridEnv.GOAL_CELL]
 
-    def add_walls(self):
-        self.place_obj(Lava())
+    def __init__(self, size: int = 5, br_freq: float | None = None):
+        self.br_freq = br_freq
+
+        self.goal_distribution = uniform_distribution((size, size))
+        if br_freq is not None:
+            # There are (env_size)**2-1 other positions
+            self.goal_distribution[size - 1, size - 1] = br_freq / (1 - br_freq) * (size ** 2 - 1)
+
+        super().__init__(
+            agent_start=None,
+            width=size,
+            height=size,
+        )
+
+    def make_grid(self):
+        super().make_grid()
+        self.goal_pos = self.place_obj(self.GOAL_CELL, self.goal_distribution)
 
 
-class ActionSubsetWrapper(ActionWrapper):
+class ThreeGoalsEnv(GridEnv):
+    GOAL_RED = Cell("r", "#F44336", manual=True)
+    GOAL_BLUE = Cell("b", "#2196F3", manual=True)
+    GOAL_GREEN = Cell("g", "#4CAF50", manual=True)
 
-    def __init__(self, env: gym.Env, action_subset: list[int]):
-        """
-        Action wrapper that restricts the action space to a subset of the original discrete action space.
-        """
-        assert isinstance(env.action_space, gym.spaces.Discrete)
-        assert isinstance(action_subset, list)
-        assert all(isinstance(action, int) for action in action_subset)
-        assert isinstance(env.action_space, gym.spaces.Discrete)
-        assert all(0 <= action < env.action_space.n for action in action_subset)
+    GOAL_CELLS = [GOAL_RED, GOAL_BLUE, GOAL_GREEN]
+    ALL_CELLS = GridEnv.ALL_CELLS + GOAL_CELLS
 
+    def __init__(self, true_goal: int, size: int):
+        super().__init__(None, size, size)
+        self.true_goal_idx = true_goal
+        self.true_goal = self.GOAL_CELLS[true_goal]
+
+    def make_grid(self):
+        super().make_grid()
+        self.goal_positions = [
+            self.place_obj(goal)
+            for goal in self.GOAL_CELLS
+        ]
+
+    def handle_object(self, obj: Cell) -> tuple[bool, float, bool]:
+        if obj is self.true_goal:
+            return True, 1, True
+        else:
+            return True, -1, True
+
+    def render_extra(self, img: pygame.Surface, resolution: int):
+        # Add a star on the true goal
+        x, y = self.goal_positions[self.true_goal_idx]
+        cx = int((x + 0.5) * resolution) - 1  # just for prettiness
+        cy = int((y + 0.5) * resolution) + 1
+        radius = int(resolution / 3)
+        # 5 points star
+        angle = np.pi * 4 / 5
+        points = [
+            (cx + radius * np.cos(angle * i), cy + radius * np.sin(angle * i))
+            for i in range(5)
+        ]
+
+        pygame.gfxdraw.aapolygon(img, points, (255, 255, 255))
+        pygame.gfxdraw.filled_polygon(img, points, (255, 255, 255))
+
+
+class FlatOneHotWrapper(ObservationWrapper):
+    def __init__(self, env: GridEnv):
         super().__init__(env)
-        self.action_subset = action_subset
-        self.action_space = gym.spaces.Discrete(len(action_subset))
+        self.n_cells = len(self.ALL_CELLS)
+        self.observation_space = gym.spaces.MultiBinary((self.width * self.height * self.n_cells,))
 
-    def action(self, action: int) -> int:
-        return self.action_subset[action]
-
-    def reverse_action(self, action: int) -> int:
-        return self.action_subset.index(action)
-
-
-class OneHotFullObsWrapper(ObservationWrapper):
-    """Converts observations from SimpleEnv to one-hot vectors."""
-
-    # All the possible objects in the grid
-    MAPPING = [
-        (1, 0, 0),  # empty
-        (2, 5, 0),  # wall
-        (8, 1, 0),  # goal
-        (10, 0, 0),  # player facing the four directions
-        (10, 0, 1),
-        (10, 0, 2),
-        (10, 0, 3),
-    ]
-    MAPPING_NO_TURN = [2, 10, 1, 8]  # wall, player, empty, goal
-
-    def __init__(self, env: gym.Env, remove_border_walls: bool = True, can_turn: bool = True):
-        super().__init__(env)
-        self.can_turn = can_turn
-        self.mapping = self.MAPPING if can_turn else self.MAPPING_NO_TURN
-        self.obs_to_index = {obs: i for i, obs in enumerate(self.mapping)}
-
-        self.dim = len(self.mapping)
-        self.remove_border_walls = remove_border_walls
-        # noinspection PyUnresolvedReferences
-        w, h = env.observation_space["image"].shape[:2]
-        if remove_border_walls:
-            w -= 2
-            h -= 2
-        self.observation_space = gym.spaces.MultiBinary((w, h, self.dim))
-
-    def observation(self, observation: WrapperObsType):
-        img = observation["image"]
-        out = np.zeros((img.shape[0], img.shape[1], self.dim), dtype=bool)
-
-        for i in range(img.shape[0]):
-            for j in range(img.shape[1]):
-                if self.can_turn:
-                    # Take (type, color, extra)
-                    obs = tuple(img[i, j])
-                else:
-                    # We only care about the type of object, not the direction (nor color)
-                    obs = img[i, j, 0]
-
-                try:
-                    out[i, j, self.obs_to_index[obs]] = True
-                except ValueError:
-                    print(f"Unknown object: {img[i, j]}")
-                    raise
-
-        if self.remove_border_walls:
-            out = out[1:-1, 1:-1, :]
-        return out
+    def observation(self, obs: WrapperObsType) -> ObsType:
+        w, h = obs.shape
+        one_hot = np.zeros((w, h, self.n_cells), dtype=bool)
+        for x in range(w):
+            for y in range(h):
+                one_hot[x, y, obs[x, y]] = True
+        return one_hot.flatten()
 
 
-def wrap_env(env: gym.Env, can_turn: bool = False):
-    """Returns a wrapped environment with the following wrappers:
-    - Restrict the action space to the first 3 actions (turn left, turn right, move forward)
-    - Convert the observation to a fully observable representation
-    - Observations are returned as one-hot vectors (env_size, env_size, dim)
-    """
-
-    if can_turn:
-        actions = [0, 1, 2]
-    else:
-        actions = [0, 1, 2, 3]
-
-    env = ActionSubsetWrapper(env, actions)
-    # env = FullyObsWrapper(env)
-    # env = OneHotPartialObsWrapper(env)
-    # env = OneHotFullObsWrapper(env, can_turn=can_turn)
-    # env = ImgObsWrapper(env)
-    return env
-
-
-def random_goal_env(size: int = 5, can_turn: bool = True):
-    """An SimpleEnv with a random goal position and random agent position."""
-    return wrap_env(
-        SimpleEnv(
-            size=size,
-            goal_pos=None,
-            agent_start_pos=None,
-            render_mode="rgb_array",
-            can_turn=can_turn,
-        ),
-        can_turn=can_turn,
-    )
-
-
-def bottom_right_env(size: int = 5, can_turn: bool = True):
-    """An SimpleEnv with the goal position in the bottom right corner and random agent position."""
-    return wrap_env(
-        SimpleEnv(
-            size=size,
-            goal_pos=(size - 2, size - 2),
-            agent_start_pos=None,
-            render_mode="rgb_array",
-            can_turn=can_turn,
-        ),
-        can_turn=can_turn,
-    )
+def random_goal_env(size: int = 5, br_freq: float | None = None) -> gym.Env:
+    """An environment with a random goal position and random agent position."""
+    return FlatOneHotWrapper(RandomGoalEnv(size, br_freq))
 
 
 @dataclass
@@ -451,7 +460,6 @@ class Perfs:
             policy: PPO,
             episodes: int = 100,
             env_size: int = 5,
-            can_turn: bool = True,
             **info,
     ):
         # Should be enough to reach the goal
@@ -459,19 +467,19 @@ class Perfs:
         # because of trajectories where the agent is stuck.
         max_len = env_size * 4
         br_success_rate = eval_agent(policy,
-                                     bottom_right_env(env_size, can_turn),
+                                     random_goal_env(env_size, 1.0),
                                      episodes,
                                      episode_len=max_len)
         success_rate = eval_agent(policy,
-                                  random_goal_env(env_size, can_turn),
+                                  random_goal_env(env_size),
                                   episodes,
                                   episode_len=max_len)
         br_freq = eval_agent(
             policy,
-            random_goal_env(env_size, can_turn),
+            random_goal_env(env_size, 1.0),
             episodes,
             episode_len=max_len,
-            end_condition=lambda locals_: locals_["env"].agent_pos == (env_size - 2, env_size - 2),
+            end_condition=lambda locals_: locals_["env"].agent_pos == (env_size - 1, env_size - 1),
         )
         return cls(br_success_rate, success_rate, br_freq, env_size, info)
 
