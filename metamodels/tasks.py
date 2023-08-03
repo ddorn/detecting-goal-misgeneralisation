@@ -3,7 +3,9 @@ from jaxtyping import Float
 from torch import Tensor
 
 
-def gen_eigenvalues(batch_size: int, mat_size: int) -> tuple[Float[Tensor, "batch size size"], Float[Tensor, "batch size"]]:
+def gen_eigenvalues(
+        batch_size: int,
+        mat_size: int) -> tuple[Float[Tensor, "batch size size"], Float[Tensor, "batch size"]]:
     """
     Generate random matrices (inputs) and their eigenvalues (targets).
     """
@@ -20,4 +22,3 @@ def gen_eigenvalues(batch_size: int, mat_size: int) -> tuple[Float[Tensor, "batc
         rotation.transpose(-1, -2),
     )
     return matrices, eigenvalues
-

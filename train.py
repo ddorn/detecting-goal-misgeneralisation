@@ -202,7 +202,6 @@ def train(
         get()
 
 
-
 def test():
     env_size = 7
     n_envs = 50
@@ -225,6 +224,7 @@ def test():
         save=False,
         return_perfs=False,
     )
+
 
 if __name__ == "__main__":
     train()

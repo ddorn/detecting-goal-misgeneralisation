@@ -14,13 +14,14 @@ from jaxtyping import Float
 from torch import Tensor
 from tqdm.autonotebook import tqdm
 
-DataGenerator = Callable[
-    [int], tuple[Float[Tensor, "batch dim"], Float[Tensor, "batch output_dim"]]
-]
+DataGenerator = Callable[[int], tuple[Float[Tensor, "batch dim"], Float[Tensor,
+                                                                        "batch output_dim"]]]
+
 
 def batch_to_device(x_y, net: nn.Module):
     device = next(net.parameters()).device
     return x_y[0].to(device), x_y[1].to(device)
+
 
 def get_accuracy(
     net: nn.Module,
@@ -37,18 +38,18 @@ def get_accuracy(
 
 
 def train(
-    net: nn.Module,
-    data_generator: DataGenerator,
-    steps: int = 10_000,
-    adversary: DataGenerator | None = None,
-    lr: float = 1e-3,
-    batch_size: int = 20,
-    adv_odds: int = 10,
-    wd: float = 0.0,
-    loss_fn: nn.Module = nn.BCELoss(),
-    log_every: int = 1000,
-    reuse_perfs: bool = False,
-    _perfs = ([], [])
+        net: nn.Module,
+        data_generator: DataGenerator,
+        steps: int = 10_000,
+        adversary: DataGenerator | None = None,
+        lr: float = 1e-3,
+        batch_size: int = 20,
+        adv_odds: int = 10,
+        wd: float = 0.0,
+        loss_fn: nn.Module = nn.BCELoss(),
+        log_every: int = 1000,
+        reuse_perfs: bool = False,
+        _perfs=([], []),
 ):
     if not reuse_perfs:
         _perfs[0].clear()
@@ -104,30 +105,24 @@ def show_example(net: nn.Module, data_generator: DataGenerator):
 class MLP(nn.Module):
     """A simple Multi-Layer Perceptron (MLP)"""
 
-    def __init__(
-        self, in_dim: int, *hidden_multipliers: int, out_dim: int | None = None
-    ):
+    def __init__(self, in_dim: int, *hidden_multipliers: int, out_dim: int | None = None):
         super().__init__()
         dims = [in_dim] + [in_dim * m for m in hidden_multipliers] + [out_dim or in_dim]
         layers = [
-            layer
-            for dim_in, dim_out in zip(dims[:-1], dims[1:])
+            layer for dim_in, dim_out in zip(dims[:-1], dims[1:])
             for layer in [nn.Linear(dim_in, dim_out), nn.ReLU()]
         ]
         self.layers = nn.Sequential(*layers[:-1])
 
-    def forward(
-        self, x: Float[Tensor, "*batch d_model"]
-    ) -> Float[Tensor, "*batch d_model"]:
+    def forward(self, x: Float[Tensor, "*batch d_model"]) -> Float[Tensor, "*batch d_model"]:
         for layer in self.layers:
             x = layer(x)
         return x
 
 
 class DotProductLayer(nn.Module):
-    def __init__(
-        self, in_dim: int, n_heads: int, d_head: int, out_dim: int | None = None
-    ):
+
+    def __init__(self, in_dim: int, n_heads: int, d_head: int, out_dim: int | None = None):
         super().__init__()
         self.in_dim = in_dim
         self.n_heads = n_heads
@@ -136,9 +131,7 @@ class DotProductLayer(nn.Module):
         self.read_head = nn.Linear(in_dim, n_heads * d_head * 2)
         self.write_head = nn.Linear(n_heads, self.out_dim)
 
-    def forward(
-        self, x: Float[Tensor, "*batch in_dim"]
-    ) -> Float[Tensor, "*batch out_dim"]:
+    def forward(self, x: Float[Tensor, "*batch in_dim"]) -> Float[Tensor, "*batch out_dim"]:
         x = self.read_head(x)
         x = x.reshape(*x.shape[:-1], self.n_heads, self.d_head, 2)
         dot_products = einops.einsum(
@@ -150,6 +143,7 @@ class DotProductLayer(nn.Module):
 
 
 class MultiAttention(nn.Module):
+
     def __init__(
         self,
         d_model: int,
@@ -177,16 +171,16 @@ class MultiAttention(nn.Module):
         self.out = nn.Linear(heads * d_head, d_model)
 
     def separate_heads(
-        self, x: Float[Tensor, "batch token head_x_d_head"]
-    ) -> Float[Tensor, "token all_token head d_head"]:
+        self,
+        x: Float[Tensor,
+                 "batch token head_x_d_head"]) -> Float[Tensor, "token all_token head d_head"]:
         """Utility function to convert the key/queries/values into a tensor with a head dimension."""
-        return einops.rearrange(
-            x, "batch token (head d_head) -> batch token head d_head", head=self.heads
-        )
+        return einops.rearrange(x,
+                                "batch token (head d_head) -> batch token head d_head",
+                                head=self.heads)
 
-    def forward(
-        self, x: Float[Tensor, "batch token d_model"]
-    ) -> Float[Tensor, "batch token d_model"]:
+    def forward(self, x: Float[Tensor,
+                               "batch token d_model"]) -> Float[Tensor, "batch token d_model"]:
         qs = self.queries(x)  # (batch, token, heads * d_head)
         q = self.separate_heads(qs)  # (batch, token, head, d_head)
 
@@ -213,6 +207,7 @@ class MultiAttention(nn.Module):
 
 
 class PoolingLayer(nn.Module):
+
     def __init__(self, kind: Literal["mean", "max", "flatten"]):
         super().__init__()
         self.kind = kind
@@ -229,6 +224,7 @@ class PoolingLayer(nn.Module):
 
 
 class SkipSequential(nn.Sequential):
+
     def forward(self, x: Float[Tensor, "batch token d_model"]):
         for layer in self:
             x = layer(x) + x
@@ -244,7 +240,9 @@ class MatrixTokenizer(nn.Module):
         out = torch.cat([x, cols], dim=-2)
         return out
 
+
 class EmbeddingExtend(nn.Module):
+
     def __init__(self, extra_space: int):
         self.extra_space = extra_space
         super().__init__()

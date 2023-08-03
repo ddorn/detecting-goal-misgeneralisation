@@ -3,3 +3,4 @@ run_logs
 .ipynb_checkpoints/
 agents/
 wandb
+models
