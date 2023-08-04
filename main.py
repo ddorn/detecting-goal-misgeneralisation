@@ -95,7 +95,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
     def __repr__(self):
         out = "\n".join("".join(self[x, y].label for x in range(self.width))
                         for y in range(self.height))
-        return f"{self.__class__.__name__}:\n{out}"
+        return f"<{self.__class__.__name__}:\n{out}>"
 
     __str__ = __repr__
 
@@ -268,44 +268,6 @@ class RandomGoalEnv(GridEnv):
         self.goal_pos = self.place_obj(self.GOAL_CELL, self.goal_distribution)
 
 
-class ThreeGoalsEnv(GridEnv):
-    GOAL_RED = Cell("r", "#F44336", manual=True)
-    GOAL_BLUE = Cell("b", "#2196F3", manual=True)
-    GOAL_GREEN = Cell("g", "#4CAF50", manual=True)
-
-    GOAL_CELLS = [GOAL_RED, GOAL_BLUE, GOAL_GREEN]
-    ALL_CELLS = GridEnv.ALL_CELLS + GOAL_CELLS
-
-    def __init__(self, true_goal: int, size: int):
-        super().__init__(None, size, size)
-        self.true_goal_idx = true_goal
-        self.true_goal = self.GOAL_CELLS[true_goal]
-
-    def make_grid(self):
-        super().make_grid()
-        self.goal_positions = [self.place_obj(goal) for goal in self.GOAL_CELLS]
-
-    def handle_object(self, obj: Cell) -> tuple[bool, float, bool]:
-        if obj is self.true_goal:
-            return True, 1, True
-        else:
-            return True, -1, True
-
-    def render_extra(self, img: pygame.Surface, resolution: int):
-        # Add a star on the true goal
-        x, y = self.goal_positions[self.true_goal_idx]
-        cx = int((x + 0.5) * resolution) - 1  # just for prettiness
-        cy = int((y + 0.5) * resolution) + 1
-        radius = int(resolution / 3)
-        # 5 points star
-        angle = np.pi * 4 / 5
-        points = [(cx + radius * np.cos(angle * i), cy + radius * np.sin(angle * i))
-                  for i in range(5)]
-
-        pygame.gfxdraw.aapolygon(img, points, (255, 255, 255))
-        pygame.gfxdraw.filled_polygon(img, points, (255, 255, 255))
-
-
 class FlatOneHotWrapper(ObservationWrapper):
 
     def __init__(self, env: GridEnv):
@@ -320,8 +282,6 @@ class FlatOneHotWrapper(ObservationWrapper):
             for y in range(h):
                 one_hot[x, y, obs[x, y]] = True
         return one_hot.flatten()
-
-
 def random_goal_env(size: int = 5, br_freq: float | None = None) -> gym.Env:
     """An environment with a random goal position and random agent position."""
     return FlatOneHotWrapper(RandomGoalEnv(size, br_freq))

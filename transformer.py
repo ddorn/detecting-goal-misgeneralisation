@@ -179,7 +179,7 @@ class CustomNetwork(nn.Module):
         assert isinstance(observation_space, spaces.MultiBinary), observation_space
         super().__init__()
 
-        self.use_separete_networks = use_separate_networks
+        self.use_separate_networks = use_separate_networks
         self.observation_space = observation_space
         vocab_size_in = observation_space.shape[-1]
 
@@ -201,7 +201,7 @@ class CustomNetwork(nn.Module):
         :return: (th.Tensor, th.Tensor) latent_policy, latent_value of the specified network.
             If all layers are shared, then ``latent_policy == latent_value``
         """
-        if self.use_separete_networks:
+        if self.use_separate_networks:
             return self.forward_actor(features), self.forward_critic(features)
 
         out = self.forward_actor(features)
@@ -227,8 +227,6 @@ class CustomActorCriticPolicy(ActorCriticPolicy):
         assert isinstance(observation_space, spaces.MultiBinary), observation_space
         self.arch_kwargs = kwargs.pop("arch", {})
 
-        # Disable orthogonal initialization
-        kwargs["ortho_init"] = True
         super().__init__(
             observation_space,
             action_space,

@@ -6,7 +6,7 @@ authors = ["ddorn <diego.dorn@free.fr>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10,<3.13"  # Scipy needs <3.13 explicitly :s
 stable-baselines3 = "^2.0.0"
 torch = "<2.0.0"
 opencv-python = "^4.8.0.74"
@@ -23,6 +23,7 @@ wandb = "^0.15.6"
 typeguard = "^4.0.0"
 torchinfo = "^1.8.0"
 pygame = "^2.5.0"
+scipy = "^1.11.1"
 
 [build-system]
 requires = ["poetry-core"]
