@@ -10,23 +10,46 @@ import numpy as np
 import plotly.express as px
 import pygame
 import pygame.gfxdraw
+import wandb
 from gymnasium import ObservationWrapper
 from gymnasium.core import WrapperObsType, ActType, ObsType, RenderFrame
+from pygame import Color
 from stable_baselines3 import PPO
 
 Pos = tuple[int, int]
 T = TypeVar("T")
 Distribution = Union[dict[T, float], T]
 
+pygame.font.init()
+
 
 def uniform_distribution(
-    bottom_right: tuple[int, int], top_left: tuple[int, int] = (0, 0)) -> dict[Pos, float]:
+        bottom_right: tuple[int, int], top_left: tuple[int, int] = (0, 0)) -> dict[Pos, float]:
     """Returns a uniform distribution over the given rectangle. Bottom and right bounds are not inclusive."""
     return {
         (x, y): 1
         for x in range(top_left[0], bottom_right[0])
         for y in range(top_left[1], bottom_right[1])
     }
+
+
+_sentinel = object()
+
+
+def sample_distribution(distribution: Distribution[T] | None, default: T = _sentinel) -> T:
+    """Sample a value from the given distribution."""
+    if isinstance(distribution, dict):
+        options = list(distribution.keys())
+        probability_sum = sum(distribution.values())
+        probabilities = np.array(list(distribution.values())) / probability_sum
+        index = np.random.choice(len(options), p=probabilities)
+        return options[index]
+    elif distribution is None:
+        if default is _sentinel:
+            raise ValueError("Distribution is None and no default value was given")
+        return default
+    else:
+        return distribution
 
 
 @dataclass
@@ -40,7 +63,6 @@ class Cell:
 
 
 class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
-
     class Actions(IntEnum):
         RIGHT = 0
         DOWN = 1
@@ -68,11 +90,11 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
     ALL_CELLS = BASE_CELLS
 
     def __init__(
-        self,
-        agent_start: Distribution[Pos] | None,
-        width: int,
-        height: int,
-        max_steps: int | None = None,
+            self,
+            agent_start: Distribution[Pos] | None,
+            width: int,
+            height: int,
+            max_steps: int | None = None,
     ):
         self.width = width
         self.height = height
@@ -83,7 +105,6 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
         self.agent_pos: tuple[int, int] = (-1, -1)
         self.grid: np.ndarray  # Defined in make_grid
         self.make_grid()
-        self.place_agent(self.agent_start)
 
         self.action_space = gym.spaces.Discrete(len(self.Actions))
         # self.observation_space = gym.spaces.MultiBinary((width, height, len(self.CellTypes)))
@@ -91,6 +112,9 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
         self.reward_range = -1, 1
 
         self.render_mode = "rgb_array"
+        self.last_reward = None  # Used for rendering
+
+        self.step_reward = -1 / self.max_steps
 
     def __repr__(self):
         out = "\n".join("".join(self[x, y].label for x in range(self.width))
@@ -108,6 +132,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
 
     def make_grid(self):
         self.grid = np.zeros((self.width, self.height), dtype="int8")
+        self.place_agent(self.agent_start)
 
     def place_agent(self, pos_distribution: Distribution[Pos] | None = None):
         # Remove the agent from the grid
@@ -123,40 +148,31 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
 
         # Sample a random position that is empty
         else:
-            pos_distribution = {
-                (x, y): pos_distribution.get((x, y), 0) if pos_distribution is not None else 1
-                for x in range(self.width)
-                for y in range(self.height) if self[x, y] is self.EMPTY_CELL
-            }
-            assert pos_distribution, "No empty cell to place the object"
-
-            options = list(pos_distribution.keys())
-            probability_sum = sum(pos_distribution.values())
-            probabilities = np.array(list(pos_distribution.values())) / probability_sum
-            index = self.np_random.choice(len(options), p=probabilities)
-            pos = options[index]
+            if pos_distribution is None:
+                pos_distribution = uniform_distribution((self.width, self.height))
+            pos = sample_distribution({p: w for p, w in pos_distribution.items() if self[p] is self.EMPTY_CELL})
 
         assert self[pos] is self.EMPTY_CELL, f"Position {pos} is not empty: {self[pos]}"
         self[pos] = obj
         return pos
 
     def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict[str, Any] | None = None,
+            self,
+            *,
+            seed: int | None = None,
+            options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         super().reset(seed=seed, options=options)
         self.steps = 0
         self.agent_pos = -1, -1
         self.make_grid()
-        self.place_agent(self.agent_start)
+        self.last_reward = None
         return self.grid, {}
 
     def step(self, action: ActType) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         new_pos = tuple(self.agent_pos + self.DIR_TO_VEC[action])
 
-        reward = 0
+        reward = self.step_reward
         terminated = False
         truncated = False
         can_move = True
@@ -188,6 +204,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
         if self.steps >= self.max_steps:
             truncated = True
 
+        self.last_reward = reward
         return self.grid, reward, terminated, truncated, {}
 
     def handle_object(self, obj: Cell) -> tuple[bool, float, bool]:
@@ -196,7 +213,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
     def render(self, resolution: int = 32, plot: bool = False) -> RenderFrame:
         # Draw borders
         full_img = pygame.Surface(((self.width + 1) * resolution, (self.height + 1) * resolution))
-        full_img.fill("#37474F")
+        full_img.fill(self.frame_color())
 
         img = full_img.subsurface(
             resolution // 2,
@@ -231,19 +248,44 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
                     img.fill(self[x, y].color, rect)
 
         self.render_extra(img, resolution)
+        txt = self.render_caption()
+        if txt:
+            s = pygame.font.SysFont(None, int(resolution / 1.5)).render(txt, True, "#FFFFFF")
+            full_img.blit(s, s.get_rect(bottomleft=full_img.get_rect().bottomleft))
 
         # Convert the image to numpy array
         array = np.array(pygame.surfarray.array3d(full_img))
-        # Flip the y-axis (pygame uses a different coordinate system)
-        array = np.flipud(array)
+        # Swap x and y-axis (numpy uses a different coordinate system)
+        array = np.transpose(array, (1, 0, 2))
 
         if plot:
             px.imshow(array).show()
 
         return array
 
+    def render_caption(self) -> str:
+        if self.last_reward is not None:
+            return f"{self.last_reward:.2f}"
+
     def render_extra(self, img: pygame.Surface, resolution: int) -> None:
         pass
+
+    def frame_color(self) -> Color:
+        if self.last_reward is None:
+            reward = 0
+        else:
+            reward = self.last_reward
+
+        grey = Color("#37474F")
+        red = Color("#FF5722")
+        green = Color("#4CAF50")
+
+        if reward < 0:
+            assert self.reward_range[0] < 0
+            return grey.lerp(red, reward / self.reward_range[0])
+        else:
+            assert self.reward_range[1] > 0
+            return grey.lerp(green, reward / self.reward_range[1])
 
 
 class RandomGoalEnv(GridEnv):
@@ -255,7 +297,7 @@ class RandomGoalEnv(GridEnv):
         self.goal_distribution = uniform_distribution((size, size))
         if br_freq is not None:
             # There are (env_size)**2-1 other positions
-            self.goal_distribution[size - 1, size - 1] = (br_freq / (1 - br_freq) * (size**2 - 1))
+            self.goal_distribution[size - 1, size - 1] = (br_freq / (1 - br_freq) * (size ** 2 - 1))
 
         super().__init__(
             agent_start=None,
@@ -273,7 +315,9 @@ class FlatOneHotWrapper(ObservationWrapper):
     def __init__(self, env: GridEnv):
         super().__init__(env)
         self.n_cells = len(self.ALL_CELLS)
-        self.observation_space = gym.spaces.MultiBinary((self.width * self.height * self.n_cells, ))
+        obs = env.observation_space
+        assert isinstance(obs, gym.spaces.MultiDiscrete), f"Expected MultiDiscrete, got {obs}"
+        self.observation_space = gym.spaces.MultiBinary((self.width * self.height * self.n_cells,))
 
     def observation(self, obs: WrapperObsType) -> ObsType:
         w, h = obs.shape
@@ -282,6 +326,8 @@ class FlatOneHotWrapper(ObservationWrapper):
             for y in range(h):
                 one_hot[x, y, obs[x, y]] = True
         return one_hot.flatten()
+
+
 def random_goal_env(size: int = 5, br_freq: float | None = None) -> gym.Env:
     """An environment with a random goal position and random agent position."""
     return FlatOneHotWrapper(RandomGoalEnv(size, br_freq))
@@ -308,12 +354,12 @@ class Trajectory:
 
     @classmethod
     def from_policy(
-        cls,
-        policy: PPO,
-        env: gym.Env,
-        max_len: int = 10,
-        end_condition: Callable[[dict], bool] | None = None,
-        no_images: bool = False,
+            cls,
+            policy: PPO,
+            env: gym.Env,
+            max_len: int = 10,
+            end_condition: Callable[[dict], bool] | None = None,
+            no_images: bool = False,
     ) -> Trajectory:
         """Run the policy in the environment and return the trajectory.
 
@@ -415,11 +461,11 @@ class Perfs:
 
     @classmethod
     def from_agent(
-        cls,
-        policy: PPO,
-        episodes: int = 100,
-        env_size: int = 5,
-        **info,
+            cls,
+            policy: PPO,
+            episodes: int = 100,
+            env_size: int = 5,
+            **info,
     ):
         # Should be enough to reach the goal
         # Higher values make the evaluation much slower,
@@ -441,15 +487,23 @@ class Perfs:
 
 
 def show_behavior(
-    policy: PPO,
-    env: gym.Env,
-    n_trajectories: int = 10,
-    max_len: int = 10,
-    **plotly_kwargs,
+        policy: PPO,
+        env: gym.Env | list[gym.Env],
+        n_trajectories: int = 10,
+        max_len: int = 10,
+        add_to_wandb: bool = False,
+        plot: bool = True,
+        **plotly_kwargs,
 ):
-    trajectories = [
-        Trajectory.from_policy(policy, env, max_len=max_len).images for _ in range(n_trajectories)
-    ]
+    if isinstance(env, list):
+        del n_trajectories
+        trajectories = [
+            Trajectory.from_policy(policy, env_, max_len=max_len).images for env_ in env
+        ]
+    else:
+        trajectories = [
+            Trajectory.from_policy(policy, env, max_len=max_len).images for _ in range(n_trajectories)
+        ]
 
     actual_max_len = max(len(traj) for traj in trajectories)
     for i, traj in enumerate(trajectories):
@@ -458,18 +512,23 @@ def show_behavior(
     trajectories = np.stack(trajectories)
 
     imgs = einops.rearrange(trajectories, "traj step h w c -> (traj h) (step w) c")
-    plotly_kwargs.setdefault("height", imgs.shape[0] // 2)
-    plotly_kwargs.setdefault("width", imgs.shape[1] // 2)
-    px.imshow(imgs, **plotly_kwargs).show()
+
+    if add_to_wandb:
+        wandb.log({f"behavior": wandb.Image(imgs)})
+
+    if plot:
+        plotly_kwargs.setdefault("height", imgs.shape[0] // 2)
+        plotly_kwargs.setdefault("width", imgs.shape[1] // 2)
+        px.imshow(imgs, **plotly_kwargs).show()
 
 
 def eval_agent(
-    policy: PPO,
-    env: gym.Env = random_goal_env(),
-    episodes: int = 100,
-    episode_len: int = 100,
-    plot: bool = False,
-    end_condition: Callable[[dict], bool] | None = None,
+        policy: PPO,
+        env: gym.Env = random_goal_env(),
+        episodes: int = 100,
+        episode_len: int = 100,
+        plot: bool = False,
+        end_condition: Callable[[dict], bool] | None = None,
 ) -> float:
     nb_success = 0
     fails = []
