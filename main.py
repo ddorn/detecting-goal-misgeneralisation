@@ -339,6 +339,12 @@ class Trajectory:
     reward: float
     ended: Literal["truncated", "terminated", "condition"]
 
+    def __len__(self):
+        return self.images.shape[0]
+
+    def __eq__(self, other):
+        return np.allclose(self.images, other.images) and self.reward == other.reward and self.ended == other.ended
+
     def image(self, pad_to: int | None = None) -> np.ndarray:
         """Return all images concatenated along the time axis."""
 
@@ -488,15 +494,18 @@ class Perfs:
 
 def show_behavior(
         policy: PPO,
-        env: gym.Env | list[gym.Env],
+        env: gym.Env | list[gym.Env] | list[Trajectory],
         n_trajectories: int = 10,
         max_len: int = 10,
         add_to_wandb: bool = False,
         plot: bool = True,
         **plotly_kwargs,
 ):
-    if isinstance(env, list):
-        del n_trajectories
+    if isinstance(env, list) and isinstance(env[0], Trajectory):
+        trajectories = [
+            traj.images for traj in env
+        ]
+    elif isinstance(env, list):
         trajectories = [
             Trajectory.from_policy(policy, env_, max_len=max_len).images for env_ in env
         ]

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import math
-from functools import partial
 from itertools import chain
 from pprint import pprint
-from random import choice, choices, sample
-from typing import Any, Callable, Self, Literal
+from random import choice, sample
+from typing import Callable, Self, Literal
 
 import gymnasium as gym
 import numpy as np
@@ -112,15 +111,17 @@ class ThreeGoalsEnv(GridEnv):
         red_green_blue = [
             [(0, 1), (1, 0), (1, 1)],
             [(0, 1), (1, 1), (0, 2)],
-            [(0, size-1), (size-1, 0), (size-1, size-1)],
+            [(0, 2), (1, 2), (1, 3)],
+            [(0, size - 1), (size - 1, 0), (size - 1, size - 1)],
             [(0, 1), (0, 2), (0, 3)],
         ]
         envs = [
-            cls(size, true_goal="blue", agent_pos=agent_pos, red_pos=red_pos, green_pos=green_pos, blue_pos=blue_pos)
-            for red_pos, green_pos, blue_pos in red_green_blue
-        ] + [
-            cls(size) for _ in range(n_random)
-        ]
+                   cls(size, true_goal="blue", agent_pos=agent_pos, red_pos=red_pos, green_pos=green_pos,
+                       blue_pos=blue_pos)
+                   for red_pos, green_pos, blue_pos in red_green_blue
+               ] + [
+                   cls(size) for _ in range(n_random)
+               ]
         if wrappers is None:
             wrappers = [FlatOneHotWrapper, AddTrueGoalWrapper]
         for wrapper in wrappers:
@@ -198,7 +199,8 @@ class ColorBlindWrapper(ObservationWrapper):
     @classmethod
     def merged(cls, env: gym.Env, *cells: Cell, disabled: bool = False) -> Self:
         """Merge the given cells so that all the agents see them as the same value (all 1s)."""
-        assert isinstance(env.unwrapped, ThreeGoalsEnv), f"Can only merge cells in {ThreeGoalsEnv}, got {env.unwrapped}"
+        env = env.unwrapped
+        assert isinstance(env, ThreeGoalsEnv), f"Can only merge cells in {ThreeGoalsEnv}, got {env}"
         assert all(cell in env.GOAL_CELLS for cell in cells), f"Cells must be in {env.GOAL_CELLS}, got {cells}"
 
         merged_ids = [i for i, goal in enumerate(env.ALL_CELLS) if goal in cells]
@@ -217,6 +219,7 @@ class ColorBlindWrapper(ObservationWrapper):
     @classmethod
     def merged_multi(cls, env, *cells: list[Cell], disabled: bool = False) -> Self:
         """Create multiple scenarios, one for each list of cells, where the list of cells is merged."""
+
         def _scenarios(switch: int) -> tuple[int, list[int]]:
             cell = env.GOAL_CELLS[switch]
             possible = [i for i, merged_cells in enumerate(cells) if cell in merged_cells]
@@ -227,6 +230,35 @@ class ColorBlindWrapper(ObservationWrapper):
                 raise ValueError(f"Cell {cell} not in any of the given cells {cells}")
 
         return cls(env, len(cells), _scenarios, disabled=disabled)
+
+
+class MergeGoalWithObsWrapper(ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        obs = env.observation_space
+        assert isinstance(obs, gym.spaces.Dict)
+        assert set(obs.keys()) >= {"obs", "switch"}, f"AddTrueGoalWrapper must be applied first, {obs.keys()}"
+        img_space = obs["obs"]
+        assert isinstance(img_space, gym.spaces.MultiBinary)
+
+        obs_size = img_space.n
+        self.goal_count = len(env.GOAL_CELLS)
+        self.observation_space = gym.spaces.Dict({
+            **obs.spaces,
+            "obs": gym.spaces.MultiBinary(obs_size + self.goal_count),
+        })
+
+    def observation(self, obs: WrapperObsType) -> ObsType:
+        grid = obs["obs"]
+        switch = obs["switch"]
+
+        one_hot = np.zeros((self.goal_count,), dtype=bool)
+        one_hot[self.true_goal_idx] = 1
+
+        return {
+            **obs,
+            "obs": np.concatenate([grid, one_hot]),
+        }
 
 
 def make_mlp(*dims, add_act_before: bool = False, add_act_after: bool = False,
@@ -489,13 +521,13 @@ class SwitchActorCriticPolicy(ActorCriticPolicy):
         print("Arch kwargs")
         pprint(self.arch_kwargs)
 
+        kwargs.setdefault("features_extractor_class", NOPFeaturesExtractor)
         super().__init__(
             observation_space,
             action_space,
             lr_schedule,
             # features_extractor_kwargs=dict(features_dim=observation_space.nvec.size),
             # Pass remaining arguments to base class
-            features_extractor_class=NOPFeaturesExtractor,
             *args,
             **kwargs,
         )
