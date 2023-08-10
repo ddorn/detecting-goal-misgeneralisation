@@ -3,262 +3,26 @@ from __future__ import annotations
 import math
 from itertools import chain
 from pprint import pprint
-from random import choice, sample
-from typing import Callable, Self, Literal
+from typing import Callable
 
 import gymnasium as gym
-import numpy as np
-import pygame
-import pygame.gfxdraw
 import torch
-from gymnasium import ObservationWrapper, Wrapper
-from gymnasium.core import WrapperObsType, ObsType
 from jaxtyping import Float, Int
-from stable_baselines3 import PPO
-from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from torch import Tensor
 from torch import nn
 
-from main import GridEnv, Cell, FlatOneHotWrapper, Distribution, Pos, sample_distribution
 
-
-class ThreeGoalsEnv(GridEnv):
-    GOAL_RED = Cell("r", "#F44336", manual=True)
-    GOAL_BLUE = Cell("b", "#2196F3", manual=True)
-    GOAL_GREEN = Cell("g", "#4CAF50", manual=True)
-
-    GOAL_CELLS = [GOAL_RED, GOAL_GREEN, GOAL_BLUE]
-    ALL_CELLS = GridEnv.ALL_CELLS + GOAL_CELLS
-
-    def __init__(self,
-                 size: int = 4,
-                 *,
-                 true_goal: Literal['red', 'green', 'blue'] | None = None,
-                 agent_pos: Distribution[Pos] | None = None,
-                 red_pos: Distribution[Pos] | None = None,
-                 green_pos: Distribution[Pos] | None = None,
-                 blue_pos: Distribution[Pos] | None = None,
-                 ):
-        self.red_pos_dist = red_pos
-        self.green_pos_dist = green_pos
-        self.blue_pos_dist = blue_pos
-
-        self.true_goal_init = true_goal
-        self.true_goal_idx = -42
-        self.goal_positions = [(-1, -1)] * 3
-
-        super().__init__(agent_pos, size, size)
-
-    @property
-    def true_goal(self) -> Cell:
-        return self.GOAL_CELLS[self.true_goal_idx]
-
-    def new_goal(self) -> int:
-        if self.true_goal_init is None:
-            return self.np_random.choice(len(self.GOAL_CELLS))
-        elif self.true_goal_init == "red":
-            return 0
-        elif self.true_goal_init == "green":
-            return 1
-        elif self.true_goal_init == "blue":
-            return 2
-        else:
-            raise ValueError(f"Invalid true_goal_init: {self.true_goal_init}")
-
-    def make_grid(self):
-        super().make_grid()
-        dists = [self.red_pos_dist, self.green_pos_dist, self.blue_pos_dist]
-        self.goal_positions = [
-            self.place_obj(goal, dist)
-            for goal, dist in zip(self.GOAL_CELLS, dists)
-        ]
-        self.true_goal_idx = self.new_goal()
-
-    def handle_object(self, obj: Cell) -> tuple[bool, float, bool]:
-        if obj is self.true_goal:
-            return True, 1, True
-        else:
-            return True, 0, True
-
-    def render_extra(self, img: pygame.Surface, resolution: int):
-        # Add a star on the true goal
-        x, y = self.goal_positions[self.true_goal_idx]
-        cx = int((x + 0.5) * resolution) - 1  # just for prettiness
-        cy = int((y + 0.5) * resolution) + 1
-        radius = int(resolution / 3)
-        # 5 points star
-        angle = np.pi * 4 / 5
-        shift = -np.pi / 2  # rotate 90 degrees, so that the star is pointing up
-        points = [(cx + radius * np.cos(angle * i + shift), cy + radius * np.sin(angle * i + shift))
-                  for i in range(5)]
-
-        pygame.gfxdraw.aapolygon(img, points, (255, 255, 255))
-        pygame.gfxdraw.filled_polygon(img, points, (255, 255, 255))
-
-    @classmethod
-    def constant(cls, size=4, true_goal: Distribution[str] = None) -> Self:
-        """Return an environment that is always the same, even after reset."""
-        true = sample_distribution(true_goal, choice(["red", "green", "blue"]))
-        positions = [(x, y) for x in range(size) for y in range(size)]
-        agent, red, green, blue = sample(positions, k=4)
-        return cls(size, true_goal=true, agent_pos=agent, red_pos=red, green_pos=green, blue_pos=blue)
-
-    @classmethod
-    def interesting(cls, size: int = 4, n_random: int = 3, wrappers: list[Wrapper] | None = None) -> list[Self]:
-        agent_pos = (0, 0)
-        red_green_blue = [
-            [(0, 1), (1, 0), (1, 1)],
-            [(0, 1), (1, 1), (0, 2)],
-            [(0, 2), (1, 2), (1, 3)],
-            [(0, size - 1), (size - 1, 0), (size - 1, size - 1)],
-            [(0, 1), (0, 2), (0, 3)],
-        ]
-        envs = [
-                   cls(size, true_goal="blue", agent_pos=agent_pos, red_pos=red_pos, green_pos=green_pos,
-                       blue_pos=blue_pos)
-                   for red_pos, green_pos, blue_pos in red_green_blue
-               ] + [
-                   cls(size) for _ in range(n_random)
-               ]
-        if wrappers is None:
-            wrappers = [FlatOneHotWrapper, AddTrueGoalWrapper]
-        for wrapper in wrappers:
-            envs = [wrapper(env) for env in envs]
-        return envs
-
-
-class AddTrueGoalWrapper(ObservationWrapper):
-    unwrapped: ThreeGoalsEnv
-
-    def __init__(self, env: gym.Env):
-        super().__init__(env)
-        self.observation_space = gym.spaces.Dict({
-            "obs": env.observation_space,
-            "switch": gym.spaces.Discrete(len(self.GOAL_CELLS)),
-        })
-
-    def observation(self, obs: WrapperObsType) -> ObsType:
-        return {
-            "obs": obs,
-            "switch": self.unwrapped.true_goal_idx,
-        }
-
-
-class ColorBlindWrapper(ObservationWrapper):
-    def __init__(self, env: gym.Env,
-                 n_scenarios: int,
-                 scenarios: Callable[[int], tuple[int, list[int]]],
-                 disabled: bool = False,
-                 ):
-        super().__init__(env)
-        obs = env.observation_space
-        assert isinstance(obs, gym.spaces.Dict)
-        assert set(obs.keys()) >= {"obs", "switch"}, f"AddTrueGoalWrapper must be applied first, {obs.keys()}"
-        assert isinstance(obs["obs"], gym.spaces.MultiDiscrete)
-        obs_size = obs["obs"].nvec
-        flat_obs_size = obs_size.sum()
-        self.observation_space = gym.spaces.Dict({
-            **obs.spaces,
-            "obs": gym.spaces.MultiBinary(flat_obs_size),
-            "switch": gym.spaces.Discrete(n_scenarios),
-        })
-        self.n_cells = obs_size.max()
-        self.scenarios = scenarios
-        self.n_scenarios = n_scenarios
-        self.disabled = disabled
-
-    def observation(self, obs: WrapperObsType) -> ObsType:
-        grid = obs["obs"]
-        switch = obs["switch"]
-        # I want a function that takes the current scenario
-        # and returns the output scenario + which colors are indistinguishable.
-        # Good.
-
-        # Merge stuff
-        w, h = grid.shape
-        one_hot = np.zeros((w, h, self.n_cells), dtype=bool)
-        for x in range(w):
-            for y in range(h):
-                one_hot[x, y, grid[x, y]] = True
-
-        # Make indistinguishable
-        new_switch, indistinguishable = self.scenarios(switch)
-        if not self.disabled and indistinguishable:
-            indistinguishable = list(indistinguishable)
-            perceived_same = one_hot[..., indistinguishable].any(axis=-1)
-            one_hot[..., indistinguishable] = perceived_same[..., None]
-
-        return {
-            **obs,
-            "obs": one_hot.flatten(),
-            "switch": new_switch,
-        }
-
-    @classmethod
-    def merged(cls, env: gym.Env, *cells: Cell, disabled: bool = False) -> Self:
-        """Merge the given cells so that all the agents see them as the same value (all 1s)."""
-        env = env.unwrapped
-        assert isinstance(env, ThreeGoalsEnv), f"Can only merge cells in {ThreeGoalsEnv}, got {env}"
-        assert all(cell in env.GOAL_CELLS for cell in cells), f"Cells must be in {env.GOAL_CELLS}, got {cells}"
-
-        merged_ids = [i for i, goal in enumerate(env.ALL_CELLS) if goal in cells]
-        non_merged = [cell for cell in env.GOAL_CELLS if cell not in cells]
-        n_scenarios = len(non_merged) + 1
-
-        def _scenarios(switch: int) -> tuple[int, list[int]]:
-            goal = env.GOAL_CELLS[switch]
-            if goal in cells:
-                return 0, merged_ids
-            else:
-                return non_merged.index(goal) + 1, merged_ids
-
-        return cls(env, n_scenarios, _scenarios, disabled=disabled)
-
-    @classmethod
-    def merged_multi(cls, env, *cells: list[Cell], disabled: bool = False) -> Self:
-        """Create multiple scenarios, one for each list of cells, where the list of cells is merged."""
-
-        def _scenarios(switch: int) -> tuple[int, list[int]]:
-            cell = env.GOAL_CELLS[switch]
-            possible = [i for i, merged_cells in enumerate(cells) if cell in merged_cells]
-            if possible:
-                s = choice(possible)
-                return s, [i for i, goal in enumerate(env.ALL_CELLS) if goal in cells[s]]
-            else:
-                raise ValueError(f"Cell {cell} not in any of the given cells {cells}")
-
-        return cls(env, len(cells), _scenarios, disabled=disabled)
-
-
-class MergeGoalWithObsWrapper(ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        obs = env.observation_space
-        assert isinstance(obs, gym.spaces.Dict)
-        assert set(obs.keys()) >= {"obs", "switch"}, f"AddTrueGoalWrapper must be applied first, {obs.keys()}"
-        img_space = obs["obs"]
-        assert isinstance(img_space, gym.spaces.MultiBinary)
-
-        obs_size = img_space.n
-        self.goal_count = len(env.GOAL_CELLS)
-        self.observation_space = gym.spaces.Dict({
-            **obs.spaces,
-            "obs": gym.spaces.MultiBinary(obs_size + self.goal_count),
-        })
-
-    def observation(self, obs: WrapperObsType) -> ObsType:
-        grid = obs["obs"]
-        switch = obs["switch"]
-
-        one_hot = np.zeros((self.goal_count,), dtype=bool)
-        one_hot[self.true_goal_idx] = 1
-
-        return {
-            **obs,
-            "obs": np.concatenate([grid, one_hot]),
-        }
+__all__ = [
+    "make_mlp",
+    "L1WeightDecay",
+    "SwitchMLP",
+    "SwitchActorCriticPolicy",
+    "SwitchPolicyValueNetwork",
+    "NOPFeaturesExtractor",
+    "CustomFeaturesExtractor",
+]
 
 
 def make_mlp(*dims, add_act_before: bool = False, add_act_after: bool = False,
@@ -308,10 +72,12 @@ class L1WeightDecay(torch.nn.Module):
             return
         if self.name_filter is None:
             for param in self.module.parameters():
+                # noinspection PyTypeChecker
                 if param.grad is None or torch.all(param.grad == 0.0):
                     param.grad = self.regularize(param)
         else:
             for name, param in self.module.named_parameters():
+                # noinspection PyTypeChecker
                 if self.name_filter in name and (
                         param.grad is None or torch.all(param.grad == 0.0)
                 ):
@@ -328,6 +94,7 @@ class L1WeightDecay(torch.nn.Module):
 
     def regularize(self, parameter):
         return parameter.data.sign() * self.weight_decay
+
 
 
 class SwitchMLP(nn.Module):
@@ -388,7 +155,7 @@ class CustomFeaturesExtractor(BaseFeaturesExtractor):
         assert isinstance(observation_space, gym.spaces.MultiBinary), observation_space
         assert len(observation_space.shape) == 3, observation_space.shape
 
-        super().__init__(observation_space, features_dim=np.prod(observation_space.shape[:-1]))
+        super().__init__(observation_space, features_dim=math.prod(observation_space.shape[:-1]))
 
     def forward(self, observations: Tensor) -> Tensor:
         # We transform the one-hot vector into a discrete observation
@@ -537,40 +304,3 @@ class SwitchActorCriticPolicy(ActorCriticPolicy):
         print("Features dim", self.features_dim)
         self.mlp_extractor = SwitchPolicyValueNetwork(
             self.features_dim, self.observation_space, **self.arch_kwargs)
-
-
-if __name__ == "__main__":
-
-    env = lambda: (
-        AddTrueGoalWrapper(FlatOneHotWrapper(ThreeGoalsEnv(None, 4)))
-    )
-    print(env())
-    print(env().observation_space)
-    print(env().action_space)
-
-    net = SwitchMLP(4, (2, 2), 2, 2, 0)
-    print(net)
-    net(torch.ones(1, 4), torch.tensor([0, 1]))
-
-    if int() == 0:
-        policy = PPO(
-            SwitchActorCriticPolicy,
-            make_vec_env(env, n_envs=10, seed=42),
-            policy_kwargs=dict(
-                arch_kwargs=dict(
-                    switched_layer=0,
-                    hidden=[64],
-                    out_dim=64,
-                    n_switches=3,
-                ),
-            ),
-            verbose=2,
-            n_epochs=40,
-            n_steps=8_000 // 10,
-            batch_size=400,
-            learning_rate=0.001,
-            # policy_kwargs=policy_kwargs,  # optimizer_kwargs=dict(weight_decay=weight_decay)),
-            # arch_kwargs=dict(net_arch=net_arch, features_extractor_class=BaseFeaturesExtractor),
-            # tensorboard_log="run_logs",
-        )
-        policy.learn(total_timesteps=100_000)

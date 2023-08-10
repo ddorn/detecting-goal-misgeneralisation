@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Callable, Tuple
 from typing import Type
 
@@ -149,7 +150,7 @@ class CustomFeaturesExtractor(BaseFeaturesExtractor):
         assert isinstance(observation_space, spaces.MultiBinary), observation_space
         assert len(observation_space.shape) == 3, observation_space.shape
 
-        super().__init__(observation_space, features_dim=np.prod(observation_space.shape[:-1]))
+        super().__init__(observation_space, features_dim=math.prod(observation_space.shape[:-1]))
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
         # We transform the one-hot vector into a discrete observation
@@ -240,5 +241,7 @@ class CustomActorCriticPolicy(ActorCriticPolicy):
     def _build_mlp_extractor(self) -> None:
         print(self.observation_space)
         print("Features dim", self.features_dim)
+        assert isinstance(self.observation_space, spaces.MultiBinary), self.observation_space
+        assert isinstance(self.features_dim, int), self.features_dim
         self.mlp_extractor = CustomNetwork(self.features_dim, self.observation_space,
                                            **self.arch_kwargs)
