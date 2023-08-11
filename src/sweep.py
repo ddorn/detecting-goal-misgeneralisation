@@ -20,40 +20,45 @@ config = dict(
     ),
 )
 
+mk_env = lambda size: M.wrap(
+    lambda: M.ThreeGoalsEnv(size),
+    lambda e: M.ColorBlindWrapper(e, reduction='max', reward_indistinguishable_goals=True),
+    M.AddTrueGoalToObsFlat,
+    lambda e: M.AddSwitch(e, 1, lambda _: 0),  # No switch, but we still use SwitchMLP as the architecture...
+)
+
+
+def train(lr, n_layers, env, use_wandb=True):
+
+    n_env = 4
+
+    policy = PPO(
+        M.SwitchActorCriticPolicy,
+        make_vec_env(env, n_envs=n_env, seed=42),
+        policy_kwargs=dict(
+            arch_kwargs=dict(
+                switched_layer=0,
+                hidden=[64, 32, 32][:n_layers - 1],
+                out_dim=32,
+                n_switches=1,
+                l1_reg=3e-5,
+            ),
+        ),
+        learning_rate=lr,
+        n_steps=2_048 // n_env,
+        tensorboard_log="../run_logs",
+        seed=42,
+        device='cpu',
+    )
+
+    policy.learn(total_timesteps=1_000_000, callback=M.WandbWithBehaviorCallback(env()) if use_wandb else None)
+    return policy
+
 
 def do_run():
     with wandb.init(sync_tensorboard=True) as run:
-
-        env = M.wrap(
-            lambda: M.ThreeGoalsEnv(run.config.env_size),
-            lambda e: M.ColorBlindWrapper(e, reduction='max', reward_indistinguishable_goals=True),
-            M.AddTrueGoalToObsFlat,
-            lambda e: M.AddSwitch(e, 1, lambda _: 0),  # No switch, but we still use SwitchMLP as the architecture...
-        )
-
-        n_env = 4
-
-        policy = PPO(
-            M.SwitchActorCriticPolicy,
-            make_vec_env(env, n_envs=n_env, seed=42),
-            policy_kwargs=dict(
-                arch_kwargs=dict(
-                    switched_layer=0,
-                    hidden=[64, 32, 32][:run.config.n_layers - 1],
-                    out_dim=32,
-                    n_switches=1,
-                    l1_reg=3e-5,
-                ),
-            ),
-            learning_rate=run.config.lr,
-            n_steps=2_048 // n_env,
-            tensorboard_log="../run_logs",
-            seed=42,
-            device='cpu',
-        )
-
-        policy.learn(total_timesteps=1_000_000, callback=M.WandbWithBehaviorCallback(env()))
-
+        env = mk_env(run.config.env_size)
+        policy = train(run.config.lr, run.config.n_layers, env)
         stats = M.evaluate(policy, env(), add_to_wandb=True, plot=False)
         run.summary.update(stats)
 
@@ -77,4 +82,4 @@ def run(sweep_id: str, count: int):
 
 
 if __name__ == "__main__":
-    cli()
+    train(3e-4, 2, mk_env(4), use_wandb=False)

@@ -76,6 +76,8 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
 
         self.steps = 0
         self.agent_pos: tuple[int, int] = (-1, -1)
+        assert self.ALL_CELLS[0] is self.EMPTY_CELL, self.ALL_CELLS
+        assert self.ALL_CELLS[1] is self.AGENT_CELL, self.ALL_CELLS
         self.grid = np.zeros((self.width, self.height), dtype="int8")
         self.make_grid()
 
@@ -106,9 +108,9 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
         self.place_agent(self.agent_start)
 
     def place_agent(self, pos_distribution: Distribution[Pos] | None = None):
-        # Remove the agent from the grid
-        if self.agent_pos[0] >= 0:
-            self[self.agent_pos] = self.EMPTY_CELL
+        # Remove the agent from the grid, if previously present
+        if self.grid[self.agent_pos] == 1:
+            self.grid[self.agent_pos] = 0  # empty cell
 
         self.agent_pos = self.place_obj(self.AGENT_CELL, pos_distribution)
 
@@ -118,12 +120,14 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
             pos = pos_distribution
 
         # Sample a random position that is empty
+        elif pos_distribution is None:
+            while True:
+                pos = self.np_random.choice(self.width), self.np_random.choice(self.height)
+                if self.grid[pos] == 0:
+                    break
         else:
-            if pos_distribution is None:
-                pos_distribution = uniform_distribution((self.width, self.height))
             pos = sample_distribution({p: w for p, w in pos_distribution.items() if self[p] is self.EMPTY_CELL})
 
-        assert self[pos] is self.EMPTY_CELL, f"Position {pos} is not empty: {self[pos]}"
         self[pos] = obj
         return pos
 

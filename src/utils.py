@@ -12,6 +12,7 @@ import numpy as np
 import plotly.express as px
 import pygame.gfxdraw
 import torch
+from stable_baselines3.common.callbacks import BaseCallback
 from tqdm.autonotebook import tqdm
 
 import wandb
@@ -253,6 +254,32 @@ class WandbWithBehaviorCallback(WandbCallback):
             show_behavior(self.model, self.env, max_len=20, add_to_wandb=True, plot=False)
 
 
+class ProgressBarCallback(BaseCallback):
+    """
+    Display a progress bar when training SB3 agent
+    using tqdm (and not rich).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pbar = None
+
+    def _on_training_start(self) -> None:
+        # Initialize progress bar
+        # Remove timesteps that were done in previous training sessions
+        self.pbar = tqdm(total=self.locals["total_timesteps"] - self.model.num_timesteps)
+
+    def _on_step(self) -> bool:
+        # Update progress bar, we do num_envs steps per call to `env.step()`
+        self.pbar.update(self.training_env.num_envs)
+        return True
+
+    def _on_training_end(self) -> None:
+        # Flush and close progress bar
+        self.pbar.refresh()
+        self.pbar.close()
+
+
 def evaluate(policy_, env_: ThreeGoalsEnv,
              n_episodes=1000, max_len=20, show_n=30,
              add_to_wandb=False, plot=True):
@@ -289,7 +316,7 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
             if n < traj_by_kind:
                 to_show += trajectories
                 continue
-                
+
             by_len = [list(g) for _, g in groupby(trajectories, len)]
             to_show_here = []
             while len(to_show_here) < traj_by_kind:
@@ -311,4 +338,3 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
         "Terminated": no_goal,
         "Wrong goal": wrong_goal,
     }
-
