@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TypeVar, Callable, Literal, Union
+from itertools import groupby
+from typing import TypeVar, Callable, Literal, Union, TYPE_CHECKING
 
 import einops
 import gymnasium as gym
@@ -10,9 +12,15 @@ import numpy as np
 import plotly.express as px
 import pygame.gfxdraw
 import torch
+from tqdm.autonotebook import tqdm
+
 import wandb
 from stable_baselines3 import PPO
 from torch import nn, Tensor
+from wandb.integration.sb3 import WandbCallback
+
+if TYPE_CHECKING:
+    from environments import ThreeGoalsEnv
 
 Pos = tuple[int, int]
 T = TypeVar("T")
@@ -93,6 +101,7 @@ class Trajectory:
             end_condition: A function that takes the locals() dict and returns True if the trajectory should end.
             no_images: If true, only the initial is returned.
         """
+
         def mk_output(ended: Literal["truncated", "terminated", "condition"]) -> Trajectory:
             return cls(np.stack(images), total_reward, ended)
 
@@ -219,3 +228,87 @@ def record_activations(module: nn.Module) -> Cache:
     print("Skipped:")
     for name in skipped:
         print("-", name)
+
+
+def unique(x, *, __previous=set()):
+    """Return the argument, if it was never seen before, otherwise raise ValueError"""
+    if x in __previous:
+        raise ValueError(f"Duplicate value {x}")
+    __previous.add(x)
+    return x
+
+
+class WandbWithBehaviorCallback(WandbCallback):
+    def __init__(self, env: gym.Env, show_every=10, **kwargs):
+        self.env = env
+        self.show_every = show_every
+        self.time = 0
+        super().__init__(**kwargs)
+
+    def _on_rollout_start(self) -> None:
+        super()._on_rollout_start()
+        # Show every  10 episodes
+        self.time += 1
+        if self.time % self.show_every == 0:
+            show_behavior(self.model, self.env, max_len=20, add_to_wandb=True, plot=False)
+
+
+def evaluate(policy_, env_: ThreeGoalsEnv,
+             n_episodes=1000, max_len=20, show_n=30,
+             add_to_wandb=False, plot=True):
+    """Return the proportion of episodes where the agent reached the true goal."""
+    found = 0
+    terminated = 0
+
+    samples = defaultdict(list)
+    for _ in tqdm(range(n_episodes)):
+        trajectory = Trajectory.from_policy(
+            policy_, env_, max_len=max_len,
+            # end_condition=lambda locals_: env_.agent_pos == env_.goal_positions[env_.true_goal_idx]
+            end_condition=lambda locals_: env_.last_reward == 1
+        )
+
+        if trajectory.ended == "condition":
+            found += 1
+        elif trajectory.ended == "terminated":
+            terminated += 1
+
+        if show_n:
+            samples[trajectory.ended].append(trajectory)
+
+    got_reward = found / n_episodes
+    wrong_goal = terminated / n_episodes
+    no_goal = (n_episodes - found - terminated) / n_episodes
+
+    if show_n > 0:
+        # For each show a sample, equilibrated across the length of the trajectory
+        to_show = []
+        traj_by_kind = show_n // len(samples)
+        for trajectories in samples.values():
+            n = len(trajectories)
+            if n < traj_by_kind:
+                to_show += trajectories
+                continue
+                
+            by_len = [list(g) for _, g in groupby(trajectories, len)]
+            to_show_here = []
+            while len(to_show_here) < traj_by_kind:
+                for traj in by_len:
+                    if traj:
+                        to_show_here.append(traj.pop())
+                    if len(to_show_here) == traj_by_kind:
+                        break
+
+            to_show_here.sort(key=len)
+            to_show += to_show_here
+
+        title = f"Got reward: {got_reward:.1%} | Truncated: {no_goal:.1%} | Wrong goal: {wrong_goal:.1%}"
+        show_behavior(policy_, to_show,
+                      add_to_wandb=add_to_wandb, title=title, plot=plot)
+
+    return {
+        "Got reward": got_reward,
+        "Terminated": no_goal,
+        "Wrong goal": wrong_goal,
+    }
+

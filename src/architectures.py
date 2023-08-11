@@ -202,7 +202,7 @@ class SwitchPolicyValueNetwork(nn.Module):
         pprint(arch_kwargs)
         assert isinstance(observation_space, gym.spaces.Dict), observation_space
         assert observation_space.keys() == {'obs', 'switch'}, observation_space.keys()
-        assert isinstance(observation_space['obs'], gym.spaces.MultiBinary), observation_space['obs']
+        assert isinstance(observation_space['obs'], (gym.spaces.MultiBinary, gym.spaces.Box)), observation_space['obs']
         assert isinstance(observation_space['switch'], gym.spaces.Discrete), observation_space['switch']
 
         super().__init__()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 from random import choice, sample
-from typing import SupportsFloat, Any, Literal, Self
+from typing import SupportsFloat, Any, Literal
 
 import gymnasium as gym
 import numpy as np
@@ -53,7 +53,8 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
     ]
 
     EMPTY_CELL = Cell(".", None)
-    AGENT_CELL = Cell("A", "#E91E63")
+    # AGENT_CELL = Cell("A", "#E91E63")
+    AGENT_CELL = Cell("A", "#FFFFFF")
     WALL_CELL = Cell("#", "#607D8B", can_overlap=False)
     GOAL_CELL = Cell("G", "#8BC34A", True, 1)
     LAVA_CELL = Cell("L", "#FF5722", True, -1)
@@ -75,7 +76,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
 
         self.steps = 0
         self.agent_pos: tuple[int, int] = (-1, -1)
-        self.grid: np.ndarray  # Defined in make_grid
+        self.grid = np.zeros((self.width, self.height), dtype="int8")
         self.make_grid()
 
         self.action_space = gym.spaces.Discrete(len(self.Actions))
@@ -101,7 +102,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
         self.grid[item[0], item[1]] = self.ALL_CELLS.index(value)
 
     def make_grid(self):
-        self.grid = np.zeros((self.width, self.height), dtype="int8")
+        self.grid.fill(0)
         self.place_agent(self.agent_start)
 
     def place_agent(self, pos_distribution: Distribution[Pos] | None = None):
@@ -111,7 +112,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
 
         self.agent_pos = self.place_obj(self.AGENT_CELL, pos_distribution)
 
-    def place_obj(self, obj: Cell, pos_distribution: Distribution[Pos] | None = None):
+    def place_obj(self, obj: Cell, pos_distribution: Distribution[Pos] | None = None) -> tuple[int, int]:
         """Place an object on an empty cell according to the given distribution."""
         if isinstance(pos_distribution, tuple):
             pos = pos_distribution
@@ -212,7 +213,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
                         (cx, cy - radius),
                     ]
                     # pygame.draw.polygon(img, color, points)
-                    pygame.draw.circle(img, self[x, y].color, (cx, cy), radius)
+                    pygame.draw.circle(img, 'black', (cx, cy), radius)
 
                 elif self[x, y].color is not None:
                     img.fill(self[x, y].color, rect)
@@ -283,9 +284,13 @@ class RandomGoalEnv(GridEnv):
 
 
 class ThreeGoalsEnv(GridEnv):
-    GOAL_RED = Cell("r", "#F44336", manual=True)
-    GOAL_BLUE = Cell("b", "#2196F3", manual=True)
-    GOAL_GREEN = Cell("g", "#4CAF50", manual=True)
+    GOAL_RED = Cell("r", "#FF0000", manual=True)
+    GOAL_GREEN = Cell("g", "#00FF00", manual=True)
+    GOAL_BLUE = Cell("b", "#0000FF", manual=True)
+
+    # GOAL_RED = Cell("r", "#F44336", manual=True)
+    # GOAL_BLUE = Cell("b", "#2196F3", manual=True)
+    # GOAL_GREEN = Cell("g", "#4CAF50", manual=True)
 
     GOAL_CELLS = [GOAL_RED, GOAL_GREEN, GOAL_BLUE]
     ALL_CELLS = GridEnv.ALL_CELLS + GOAL_CELLS
@@ -356,7 +361,7 @@ class ThreeGoalsEnv(GridEnv):
         pygame.gfxdraw.filled_polygon(img, points, (255, 255, 255))
 
     @classmethod
-    def constant(cls, size=4, true_goal: Distribution[str] = None) -> Self:
+    def constant(cls, size=4, true_goal: Distribution[str] = None):
         """Return an environment that is always the same, even after reset."""
         true = sample_distribution(true_goal, choice(["red", "green", "blue"]))
         positions = [(x, y) for x in range(size) for y in range(size)]
@@ -365,7 +370,7 @@ class ThreeGoalsEnv(GridEnv):
         return cls(size, true_goal=true, agent_pos=agent, red_pos=red, green_pos=green, blue_pos=blue)
 
     @classmethod
-    def interesting(cls, size: int = 4, n_random: int = 3, wrappers: list[Wrapper] | None = None) -> list[Self]:
+    def interesting(cls, size: int = 4, n_random: int = 3, wrappers: list[Wrapper] | None = None) -> list[ThreeGoalsEnv]:
         agent_pos = (0, 0)
         red_green_blue = [
             [(0, 1), (1, 0), (1, 1)],

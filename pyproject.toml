@@ -23,7 +23,6 @@ wandb = "^0.15.6"
 typeguard = "^4.0.0"
 torchinfo = "^1.8.0"
 pygame = "^2.5.0"
-scipy = "^1.11.1"
 
 [build-system]
 requires = ["poetry-core"]
