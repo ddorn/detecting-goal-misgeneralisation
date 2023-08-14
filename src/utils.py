@@ -10,15 +10,17 @@ import einops
 import gymnasium as gym
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import pygame.gfxdraw
 import torch
+from jaxtyping import Float
+from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
+from torch import nn, Tensor
 from tqdm.autonotebook import tqdm
+from wandb.integration.sb3 import WandbCallback
 
 import wandb
-from stable_baselines3 import PPO
-from torch import nn, Tensor
-from wandb.integration.sb3 import WandbCallback
 
 if TYPE_CHECKING:
     from environments import ThreeGoalsEnv
@@ -349,3 +351,60 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
         "Terminated": no_goal,
         "Wrong goal": wrong_goal,
     }
+
+
+
+
+def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100) -> Float[torch.Tensor, "true_goal=3 end_pos=4"]:
+    """
+    Returns stats of where the policy ended, given the true goal.
+    """
+
+    stats = np.zeros((3, 4))
+    for _ in tqdm(range(n_episodes)):
+        obs, _ = env.reset()
+        true_goal = env.true_goal_idx
+        done = terminated = False
+        while not (done or terminated):
+            action, _ = policy.predict(obs)
+            obs, _, done, terminated, _ = env.step(action)
+
+        try:
+            end_goal = env.goal_positions.index(env.agent_pos)
+        except ValueError:
+            end_goal = 3
+        stats[true_goal, end_goal] += 1
+
+    stats = stats / stats.sum(-1, keepdims=True)
+
+    # Plot with plotly
+    fig = go.Figure(data=go.Heatmap(
+        z=stats,
+        x=["red", "green", "blue", "no goal"],
+        y=["red", "green", "blue"],
+        hoverongaps=False,
+        hovertemplate="True goal: %{y}<br>End goal: %{x}<br>Proportion: %{z:.1%}<extra></extra>",
+        zmin=0,
+        zmax=1,
+        colorscale="Blues",
+    ))
+    # Write the % inside each cell
+    for i in range(3):
+        for j in range(4):
+            fig.add_annotation(
+                x=j,
+                y=i,
+                text=f"{stats[i, j]:.1%}",
+                showarrow=False,
+                font_size=20,
+            )
+    fig.update_layout(
+        title=f"Proportion of trajectories ending at each goal (n={n_episodes})",
+        xaxis_title="End goal",
+        yaxis_title="True goal",
+        width=500,
+        height=500,
+    )
+    fig.show()
+
+    return stats

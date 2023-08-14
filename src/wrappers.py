@@ -190,7 +190,7 @@ class OneHotColorBlindWrapper(BaseBlindWrapper):
     """
 
     def __init__(self, env: gym.Env,
-                 merged_channels: tuple[int, ...] = (3, 4),
+                 merged_channels: tuple[int, ...] = (2, 3),
                  reward_indistinguishable_goals: bool = False,
                  disabled: bool = False):
         super().__init__(env, merged_channels, reward_indistinguishable_goals, disabled)

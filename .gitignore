@@ -4,3 +4,4 @@ run_logs
 agents/
 wandb
 models
+old_run_logs
