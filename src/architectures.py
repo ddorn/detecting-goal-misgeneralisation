@@ -6,16 +6,18 @@ from typing import Callable, Iterable
 
 import gymnasium as gym
 import torch
+from einops import einops
 from jaxtyping import Float, Int
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.preprocessing import preprocess_obs
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.utils import obs_as_tensor, get_device
+from stable_baselines3.common.utils import obs_as_tensor
 from torch import Tensor
 from torch import nn
 
 __all__ = [
     "MLP",
+    "Split",
+    "Rearrange",
     "L1WeightDecay",
     "SwitchNetwork",
     "SwitchedLayer",
@@ -50,6 +52,46 @@ class MLP(nn.Sequential):
                 layers.pop()
 
         super().__init__(*layers)
+
+
+class Split(nn.Module):
+    """
+    Splits the input into two parts, applies a different modules to each, and concatenates the results on the last dim.
+    """
+    def __init__(self, left_size: int, left: nn.Module, right: nn.Module):
+        super().__init__()
+        self.left_size = left_size
+        self.left = left
+        self.right = right
+
+    def forward(self, x: Tensor) -> Tensor:
+        x_left = x[..., :self.left_size]
+        x_right = x[..., self.left_size:]
+        return torch.cat([
+            self.left(x_left),
+            self.right(x_right),
+        ], dim=-1)
+
+    def extra_repr(self) -> str:
+        return f"left_size={self.left_size}"
+
+
+class Rearrange(nn.Module):
+    """Calls einops.rearrange on the input."""
+
+    def __init__(self, pattern: str, **axes_lengths: int):
+        super().__init__()
+        self.pattern = pattern
+        self.axes_lengths = axes_lengths
+
+    def forward(self, x: Tensor) -> Tensor:
+        return einops.rearrange(x, self.pattern, **self.axes_lengths)
+
+    def extra_repr(self) -> str:
+        lengths = ', '.join(f"{axis}={length}" for axis, length in self.axes_lengths.items())
+        if lengths:
+            lengths = f", {lengths}"
+        return f"'{self.pattern}'{lengths}"
 
 
 class L1WeightDecay(torch.nn.Module):
