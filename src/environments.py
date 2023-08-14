@@ -14,7 +14,6 @@ from gymnasium.core import ActType, ObsType, RenderFrame, Wrapper
 from pygame import Color
 
 from utils import Distribution, Pos, sample_distribution, uniform_distribution
-import wrappers as my_wrappers
 
 __all__ = [
     "Cell",
@@ -122,7 +121,9 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
         # Sample a random position that is empty
         elif pos_distribution is None:
             while True:
-                pos = self.np_random.choice(self.width), self.np_random.choice(self.height)
+                x = int(self.np_random.random() * self.width)
+                y = int(self.np_random.random() * self.height)
+                pos = x, y
                 if self.grid[pos] == 0:
                     break
         else:
@@ -374,7 +375,7 @@ class ThreeGoalsEnv(GridEnv):
         return cls(size, true_goal=true, agent_pos=agent, red_pos=red, green_pos=green, blue_pos=blue)
 
     @classmethod
-    def interesting(cls, size: int = 4, n_random: int = 3, wrappers: list[Wrapper] | None = None) -> list[ThreeGoalsEnv]:
+    def interesting(cls, size: int = 4, n_random: int = 3, wrappers: list[type[Wrapper]] | None = None) -> list[ThreeGoalsEnv]:
         agent_pos = (0, 0)
         red_green_blue = [
             [(0, 1), (1, 0), (1, 1)],
@@ -390,9 +391,8 @@ class ThreeGoalsEnv(GridEnv):
                ] + [
                    cls(size) for _ in range(n_random)
                ]
-        if wrappers is None:
-            wrappers = [my_wrappers.FlatOneHotWrapper, my_wrappers.AddTrueGoalWrapper]
-        for wrapper in wrappers:
-            envs = [wrapper(env) for env in envs]
+        if wrappers is not None:
+            for wrapper in wrappers:
+                envs = [wrapper(env) for env in envs]
         return envs
 
