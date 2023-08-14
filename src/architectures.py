@@ -233,7 +233,7 @@ class CustomPolicyValueNetwork(nn.Module):
         # For this, we compute the output of the network with dummy values
         # and extract the dimension from the result
         device = next(policy_net.parameters()).device
-        obs = obs_as_tensor(observation_space.sample(), device)
+        obs = obs_as_tensor(observation_space.sample(), device).float()
         policy_out, value_out = self.forward(obs)
         self.latent_dim_pi = policy_out.shape[-1]
         self.latent_dim_vf = value_out.shape[-1]
