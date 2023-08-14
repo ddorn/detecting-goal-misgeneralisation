@@ -4,7 +4,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import groupby
-from typing import TypeVar, Callable, Literal, Union, TYPE_CHECKING
+from typing import TypeVar, Callable, Literal, Union, TYPE_CHECKING, Dict, Any
 
 import einops
 import gymnasium as gym
@@ -21,6 +21,8 @@ from tqdm.autonotebook import tqdm
 from wandb.integration.sb3 import WandbCallback
 
 import wandb
+
+import architectures
 
 if TYPE_CHECKING:
     from environments import ThreeGoalsEnv
@@ -282,6 +284,25 @@ class ProgressBarCallback(BaseCallback):
         self.pbar.close()
 
 
+class L1WeightDecayCallback(BaseCallback):
+    """Callback to schedule L1 weight decay."""
+    def __init__(self, schedule: Callable[[float], float]):
+        super().__init__()
+        self.schedule = schedule
+        self.l1_module: architectures.L1WeightDecay = None
+
+    def _init_callback(self) -> None:
+        self.l1_module = next(m for m in self.model.policy.modules() if isinstance(m, architectures.L1WeightDecay))
+
+    def _on_rollout_end(self) -> None:
+        # noinspection PyProtectedMember
+        prop = self.model._current_progress_remaining
+        self.l1_module.weight_decay = self.schedule(prop)
+
+    def _on_step(self) -> bool:
+        return True
+
+
 def sample_trajectories(
         *trajectories_groups: list[Trajectory],
         n_trajectories: int = 30,
@@ -353,9 +374,9 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
     }
 
 
-
-
-def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100, subtitle: str = "") -> Float[torch.Tensor, "true_goal=3 end_pos=4"]:
+def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100, subtitle: str = "",
+               wandb_name: str=None, plot: bool = True) -> Float[
+    torch.Tensor, "true_goal=3 end_pos=4"]:
     """
     Returns stats of where the policy ended, given the true goal.
     """
@@ -409,6 +430,10 @@ def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100, subtitle: str 
         width=500,
         height=500,
     )
-    fig.show()
+
+    if wandb_name:
+        wandb.log({wandb_name: fig})
+    if plot:
+        fig.show()
 
     return stats
