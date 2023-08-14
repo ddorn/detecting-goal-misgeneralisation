@@ -67,11 +67,13 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
             width: int,
             height: int,
             max_steps: int | None = None,
+            step_reward: float = None,
     ):
         self.width = width
         self.height = height
         self.agent_start = agent_start
         self.max_steps = max_steps if max_steps is not None else width * height
+        self.step_reward = step_reward if step_reward is not None else -1 / self.max_steps
 
         self.steps = 0
         self.agent_pos: tuple[int, int] = (-1, -1)
@@ -85,8 +87,6 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
         self.reward_range = -1, 1
 
         self.last_reward = None  # Used for rendering
-
-        self.step_reward = -1 / self.max_steps
 
     def __repr__(self):
         out = "\n".join("".join(self[x, y].label for x in range(self.width))
@@ -196,7 +196,7 @@ class GridEnv(gym.Env[gym.spaces.MultiDiscrete, gym.spaces.Discrete]):
             resolution // 2,
             self.width * resolution,
             self.height * resolution,
-            )
+        )
 
         # Draw each cell
         for x in range(self.width):
@@ -287,7 +287,6 @@ class RandomGoalEnv(GridEnv):
         self.goal_pos = self.place_obj(self.GOAL_CELL, self.goal_distribution)
 
 
-
 class ThreeGoalsEnv(GridEnv):
     GOAL_RED = Cell("r", "#FF0000", manual=True)
     GOAL_GREEN = Cell("g", "#00FF00", manual=True)
@@ -308,6 +307,7 @@ class ThreeGoalsEnv(GridEnv):
                  red_pos: Distribution[Pos] | None = None,
                  green_pos: Distribution[Pos] | None = None,
                  blue_pos: Distribution[Pos] | None = None,
+                 step_reward: float = None,
                  ):
         self.red_pos_dist = red_pos
         self.green_pos_dist = green_pos
@@ -317,7 +317,7 @@ class ThreeGoalsEnv(GridEnv):
         self.true_goal_idx = -42
         self.goal_positions = [(-1, -1)] * 3
 
-        super().__init__(agent_pos, size, size)
+        super().__init__(agent_pos, size, size, step_reward=step_reward)
 
     @property
     def true_goal(self) -> Cell:
@@ -375,7 +375,8 @@ class ThreeGoalsEnv(GridEnv):
         return cls(size, true_goal=true, agent_pos=agent, red_pos=red, green_pos=green, blue_pos=blue)
 
     @classmethod
-    def interesting(cls, size: int = 4, n_random: int = 3, wrappers: list[type[Wrapper]] | None = None) -> list[ThreeGoalsEnv]:
+    def interesting(cls, size: int = 4, n_random: int = 3, wrappers: list[type[Wrapper]] | None = None) -> list[
+        ThreeGoalsEnv]:
         agent_pos = (0, 0)
         red_green_blue = [
             [(0, 1), (1, 0), (1, 1)],
@@ -386,7 +387,7 @@ class ThreeGoalsEnv(GridEnv):
         ]
         envs = [
                    cls(size, true_goal="blue", agent_pos=agent_pos, red_pos=red_pos, green_pos=green_pos,
-                       blue_pos=blue_pos)
+                       blue_pos=blue_pos, step_reward=0)
                    for red_pos, green_pos, blue_pos in red_green_blue
                ] + [
                    cls(size) for _ in range(n_random)
@@ -395,4 +396,3 @@ class ThreeGoalsEnv(GridEnv):
             for wrapper in wrappers:
                 envs = [wrapper(env) for env in envs]
         return envs
-
