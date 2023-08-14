@@ -1,6 +1,7 @@
 import click
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
+from torch import nn
 
 import wandb
 
@@ -24,25 +25,37 @@ mk_env = lambda size: M.wrap(
     lambda: M.ThreeGoalsEnv(size),
     lambda e: M.ColorBlindWrapper(e, reduction='max', reward_indistinguishable_goals=True),
     M.AddTrueGoalToObsFlat,
-    lambda e: M.AddSwitch(e, 1, lambda _: 0),  # No switch, but we still use SwitchMLP as the architecture...
 )
 
 
-def train(lr, n_layers, env, use_wandb=True):
+def train(lr, n_layers, env_size, use_wandb=True):
+    env = mk_env(env_size)
 
     n_env = 4
+    arch = M.Split(-3,
+                   left=nn.Sequential(
+                       M.Rearrange("... (h w c) -> ... c h w", h=env_size, w=env_size, c=3),
+                       # nn.Conv2d(3, 16, 3, padding=1),
+                       # nn.ReLU(),
+                       # nn.Conv2d(16, 16, 3, padding=1),
+                       # nn.ReLU(),
+                       # nn.Conv2d(16, 4, 3, padding=1),
+                       # nn.ReLU(),
+                       nn.Flatten(-3),
+                   ),
+                   right=nn.Identity(),
+                   )
+    arch = nn.Sequential(
+        arch,
+        M.MLP(env_size**2 * 3 + 3, 32, 32, add_act_after=True),
+        # M.MLP(4 * ENV_SIZE ** 2 + 3, 32, 32, add_act_after=True),
+    )
 
     policy = PPO(
-        M.SwitchActorCriticPolicy,
+        M.CustomActorCriticPolicy,
         make_vec_env(env, n_envs=n_env, seed=42),
         policy_kwargs=dict(
-            arch_kwargs=dict(
-                switched_layer=0,
-                hidden=[64, 32, 32][:n_layers - 1],
-                out_dim=32,
-                n_switches=1,
-                l1_reg=3e-5,
-            ),
+            arch=arch,
         ),
         learning_rate=lr,
         n_steps=2_048 // n_env,
@@ -82,4 +95,4 @@ def run(sweep_id: str, count: int):
 
 
 if __name__ == "__main__":
-    train(3e-4, 2, mk_env(4), use_wandb=False)
+    train(3e-4, 2, 4, use_wandb=False)
