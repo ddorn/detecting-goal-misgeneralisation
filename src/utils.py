@@ -280,6 +280,37 @@ class ProgressBarCallback(BaseCallback):
         self.pbar.close()
 
 
+def sample_trajectories(
+        *trajectories_groups: list[Trajectory],
+        n_trajectories: int = 30,
+) -> list[Trajectory]:
+    """
+    Sample from multiple groups of trajectories, with sample equilibrated across the length of the trajectory.
+    """
+
+    to_show = []
+    traj_by_kind = n_trajectories // len(trajectories_groups)
+    for trajectories in trajectories_groups:
+        n = len(trajectories)
+        if n < traj_by_kind:
+            to_show += trajectories
+            continue
+
+        by_len = [list(g) for _, g in groupby(trajectories, len)]
+        to_show_here = []
+        while len(to_show_here) < traj_by_kind:
+            for traj in by_len:
+                if traj:
+                    to_show_here.append(traj.pop())
+                if len(to_show_here) == traj_by_kind:
+                    break
+
+        to_show_here.sort(key=len)
+        to_show += to_show_here
+
+    return to_show
+
+
 def evaluate(policy_, env_: ThreeGoalsEnv,
              n_episodes=1000, max_len=20, show_n=30,
              add_to_wandb=False, plot=True):
@@ -307,28 +338,8 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
     wrong_goal = terminated / n_episodes
     no_goal = (n_episodes - found - terminated) / n_episodes
 
-    if show_n > 0:
-        # For each show a sample, equilibrated across the length of the trajectory
-        to_show = []
-        traj_by_kind = show_n // len(samples)
-        for trajectories in samples.values():
-            n = len(trajectories)
-            if n < traj_by_kind:
-                to_show += trajectories
-                continue
-
-            by_len = [list(g) for _, g in groupby(trajectories, len)]
-            to_show_here = []
-            while len(to_show_here) < traj_by_kind:
-                for traj in by_len:
-                    if traj:
-                        to_show_here.append(traj.pop())
-                    if len(to_show_here) == traj_by_kind:
-                        break
-
-            to_show_here.sort(key=len)
-            to_show += to_show_here
-
+    if show_n:
+        to_show = sample_trajectories(*samples.values(), n_trajectories=show_n)
         title = f"Got reward: {got_reward:.1%} | Truncated: {no_goal:.1%} | Wrong goal: {wrong_goal:.1%}"
         show_behavior(policy_, to_show,
                       add_to_wandb=add_to_wandb, title=title, plot=plot)
