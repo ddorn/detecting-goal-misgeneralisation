@@ -355,7 +355,7 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
 
 
 
-def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100) -> Float[torch.Tensor, "true_goal=3 end_pos=4"]:
+def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100, subtitle: str = "") -> Float[torch.Tensor, "true_goal=3 end_pos=4"]:
     """
     Returns stats of where the policy ended, given the true goal.
     """
@@ -398,8 +398,12 @@ def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100) -> Float[torch
                 showarrow=False,
                 font_size=20,
             )
+
+    if subtitle:
+        subtitle += "<br>"
+
     fig.update_layout(
-        title=f"Proportion of trajectories ending at each goal (n={n_episodes})",
+        title=subtitle + f"Proportion of trajectories ending at each goal (n={n_episodes})",
         xaxis_title="End goal",
         yaxis_title="True goal",
         width=500,
