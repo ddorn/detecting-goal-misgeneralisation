@@ -195,8 +195,8 @@ class OneHotColorBlindWrapper(BaseBlindWrapper):
                  disabled: bool = False):
         super().__init__(env, merged_channels, reward_indistinguishable_goals, disabled)
 
-        self.n_goals = len(self.env.GOAL_CELLS)
-        self.observation_space = gym.spaces.MultiBinary(n=(*env.observation_space.shape, self.n_goals))
+        self.n_cells = len(self.env.ALL_CELLS)
+        self.observation_space = gym.spaces.MultiBinary(n=(*env.observation_space.shape, self.n_cells))
 
     def is_indistinguishable_from_true_goal(self, goal: envs.Cell) -> bool:
         if goal == self.env.true_goal:
