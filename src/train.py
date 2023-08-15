@@ -54,7 +54,7 @@ def apply_all(decorators):
     return _decorator
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Experiment(ABC):
     """
     Abstract class for an experiment
@@ -98,7 +98,6 @@ class Experiment(ABC):
         """Return the name of the experiment"""
         # Convert CamelCase to snake_case
         return re.sub(r'(?<!^)(?=[A-Z])', '_', cls.__name__).lower()
-
 
     def run(self):
         """Run one instance of the experiment"""
@@ -240,6 +239,7 @@ class Experiment(ABC):
         return _cmd
 
 
+@dataclass
 class BlindThreeGoalsOneHot(Experiment):
     """
     Blind one-hot version of ThreeGoalsEnv
@@ -308,6 +308,7 @@ class BlindThreeGoalsOneHot(Experiment):
         }
 
 
+@dataclass
 class BlindThreeGoalsRgbChannelReg(BlindThreeGoalsOneHot):
     """
     Blind RGB version of ThreeGoalsEnv with channel regularization
@@ -318,6 +319,11 @@ class BlindThreeGoalsRgbChannelReg(BlindThreeGoalsOneHot):
     The first convolutional layer has the channel with the lowest norm regularized
     strongly.
     """
+
+    final_wd: float = field(
+        default=0.01,
+        metadata=dict(help="Weight decay"),
+    )
 
     def __init__(self, *, initial_lr: float = 0.1, **kwargs):
         super().__init__(initial_lr=initial_lr, **kwargs)
