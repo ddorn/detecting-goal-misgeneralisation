@@ -284,20 +284,31 @@ class ProgressBarCallback(BaseCallback):
         self.pbar.close()
 
 
-class L1WeightDecayCallback(BaseCallback):
+class WeightDecayCallback(BaseCallback):
     """Callback to schedule L1 weight decay."""
     def __init__(self, schedule: Callable[[float], float]):
         super().__init__()
         self.schedule = schedule
-        self.l1_module: architectures.L1WeightDecay = None
+        self.modules_to_decay: list[architectures.WeightDecay] = []
 
     def _init_callback(self) -> None:
-        self.l1_module = next(m for m in self.model.policy.modules() if isinstance(m, architectures.L1WeightDecay))
+        self.modules_to_decay = [
+            module for module in self.model.policy.modules()
+            # We would do isinstance(module, architectures.WeightDecay), but that would
+            # not work when the code is reloaded in a notebook.
+            if any("WeightDecay" in c.__name__ for c in module.__class__.__mro__)
+        ]
+        for module in self.modules_to_decay:
+            module.logger = self.logger
+        assert len(self.modules_to_decay) > 0, "No modules to decay"
 
     def _on_rollout_end(self) -> None:
         # noinspection PyProtectedMember
         prop = self.model._current_progress_remaining
-        self.l1_module.weight_decay = self.schedule(prop)
+        wd = self.schedule(prop)
+        self.logger.record("train/weight_decay", wd)
+        for module in self.modules_to_decay:
+            module.weight_decay = wd
 
     def _on_step(self) -> bool:
         return True
