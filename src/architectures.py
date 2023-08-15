@@ -18,7 +18,9 @@ __all__ = [
     "MLP",
     "Split",
     "Rearrange",
+    "WeightDecay",
     "L1WeightDecay",
+    "PerChannelL1WeightDecay",
     "SwitchNetwork",
     "SwitchedLayer",
     "CustomActorCriticPolicy",
@@ -29,7 +31,7 @@ __all__ = [
 
 class MLP(nn.Sequential):
     def __init__(self, *dims, add_act_before: bool = False, add_act_after: bool = False,
-             activation=nn.Tanh):
+                 activation=nn.Tanh):
         """A multi-layer perceptron.
 
         Args:
@@ -58,6 +60,7 @@ class Split(nn.Module):
     """
     Splits the input into two parts, applies a different modules to each, and concatenates the results on the last dim.
     """
+
     def __init__(self, left_size: int, left: nn.Module, right: nn.Module):
         super().__init__()
         self.left_size = left_size
@@ -94,35 +97,40 @@ class Rearrange(nn.Module):
         return f"'{self.pattern}'{lengths}"
 
 
-class L1WeightDecay(torch.nn.Module):
+class WeightDecay(torch.nn.Module):
     # Adapted from https://github.com/szymonmaszke/torchlayers/blob/master/torchlayers/regularization.py#L150
-    def __init__(self, module, weight_decay: float, name: str = None):
+    def __init__(self, module, weight_decay: float, name_filter: str = None, print_names: bool = False):
         super().__init__()
         assert weight_decay >= 0.0
         self.module = module
         self.weight_decay = weight_decay
-        self.name_filter = name
+        self.name_filter = name_filter
 
         self.hook = self.module.register_full_backward_hook(self._weight_decay_hook)
 
+        if print_names:
+            for name, param in self.module.named_parameters():
+                if self.name_filter is None or self.name_filter in name:
+                    print(f"Applying weight decay to {name} ({param.shape})")
+
     def regularize(self, parameter):
-        return parameter.data.sign() * self.weight_decay
+        """Apply weight decay to a parameter."""
+        raise NotImplementedError
+
+    def parameters_to_regularize(self) -> Iterable[nn.Parameter]:
+        if self.name_filter is None:
+            return self.module.parameters()
+        else:
+            return (param for name, param in self.module.named_parameters() if self.name_filter in name)
 
     def _weight_decay_hook(self, *_):
         if self.weight_decay <= 0.0:
             return
-        if self.name_filter is None:
-            for param in self.module.parameters():
-                # noinspection PyTypeChecker
-                if param.grad is None or torch.all(param.grad == 0.0):
-                    param.grad = self.regularize(param)
-        else:
-            for name, param in self.module.named_parameters():
-                # noinspection PyTypeChecker
-                if self.name_filter in name and (
-                        param.grad is None or torch.all(param.grad == 0.0)
-                ):
-                    param.grad = self.regularize(param)
+
+        for param in self.parameters_to_regularize():
+            # noinspection PyTypeChecker
+            if param.grad is None or torch.all(param.grad == 0.0):
+                param.grad = self.regularize(param)
 
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
@@ -136,6 +144,43 @@ class L1WeightDecay(torch.nn.Module):
     def remove(self):
         self.hook.remove()
 
+
+class L1WeightDecay(WeightDecay):
+    def regularize(self, parameter):
+        return parameter.data.sign() * self.weight_decay
+
+
+class PerChannelL1WeightDecay(WeightDecay):
+    def regularize(self, parameter: Tensor):
+        assert parameter.dim() == 4, f"Got a parameter with shape {parameter.shape}, expected (out, in, h, w)"
+        per_channel_norm = einops.reduce(
+            parameter.data.abs(),
+            "out in h w -> in",
+            reduction="max",
+        )
+
+        if hasattr(self, "logger"):
+            for i, v in enumerate(per_channel_norm.tolist()):
+                self.logger.record(f"per_channel_norm_{i}", v)
+
+        out = torch.zeros_like(parameter)
+        # sorted_channels = torch.argsort(per_channel_norm)
+        # num_small_channels = (per_channel_norm < 0.1).sum()
+        # # Regularise the small channels + one more
+        # for channel in sorted_channels[:num_small_channels + 1]:
+        #     out[channel] = parameter[channel].sign() * self.weight_decay
+
+        # Weight decay prop to the sqrt of the channel norm
+        # penalty = per_channel_norm.sqrt() * self.weight_decay
+        # return parameter * penalty[..., None, None]
+
+        # Weight decay the channel with the lowest norm
+        min_channel = torch.argmin(per_channel_norm)
+        out[:, min_channel] = parameter[:, min_channel] * self.weight_decay
+        return out
+        # return parameter.sign() * (per_channel_norm * self.weight_decay)[..., None, None]
+        # return parameter * (per_channel_norm * self.weight_decay)[..., None, None]
+        # return parameter / (per_channel_norm[..., None, None] + 1e-8) * self.weight_decay
 
 # Switch networks
 
@@ -191,14 +236,12 @@ class SwitchNetwork(nn.ModuleList):
         return [self.mk_net(switch) for switch in range(self.n_switches)]
 
 
-# mlp = SwitchNetwork(*make_mlp(10, 20, 10), switched=(0, 1), n_switches=2)
-
-
 # Policy related classes
 
 
 class NOPFeaturesExtractor(BaseFeaturesExtractor):
     """A feature extractor that does nothing"""
+
     def __init__(self, observation_space: gym.spaces.MultiBinary):
         # Hack: we need to pass a features_dim > 0, but we don't actually use it.
         # features_dim needs to be an integer,
@@ -300,28 +343,3 @@ class CustomActorCriticPolicy(ActorCriticPolicy):
             self.arch[0],
             self.arch[1],
         )
-
-
-# Convenience methods to access the weights of the network.
-#
-# @property
-# def switch_weights(self) -> Float[Tensor, "switch out_dim in_dim"]:
-#     """Returns the weights of the switch layers in one tensor."""
-#     return torch.stack([layer.weight for layer in self.policy_net.module.switches]).detach().cpu()
-#
-# @property
-# def switch_biases(self) -> Float[Tensor, "switch out_dim"]:
-#     """Returns the biases of the switch layers in one tensor."""
-#     return torch.stack([layer.bias for layer in self.policy_net.module.switches]).detach().cpu()
-#
-# @property
-# def weights(self) -> Float[Tensor, "layer out_dim in_dim"]:
-#     """Returns the weights of the non-switch layers of the policy network in one tensor."""
-#     layers = chain(self.policy_net.module.pre_switch, self.policy_net.module.post_switch)
-#     return torch.stack([layer.weight for layer in layers]).detach().cpu()
-#
-# @property
-# def biases(self) -> Float[Tensor, "layer out_dim"]:
-#     """Returns the biases of the non-switch layers of the policy network in one tensor."""
-#     layers = chain(self.policy_net.module.pre_switch, self.policy_net.module.post_switch)
-#     return torch.stack([layer.bias for layer in layers]).detach().cpu()
