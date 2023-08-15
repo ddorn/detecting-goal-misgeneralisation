@@ -89,7 +89,7 @@ def get_agent_3_goal_blind(
 
     # Start wandb and define callbacks
     callbacks = [M.ProgressBarCallback(),
-                 M.L1WeightDecayCallback(lambda f: (1 - f) * final_wd)]
+                 M.WeightDecayCallback(lambda f: (1 - f) * final_wd)]
     num_params = sum(p.numel() for p in policy.policy.parameters())
     config = dict(
         num_params=num_params,
