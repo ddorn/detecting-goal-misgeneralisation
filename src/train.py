@@ -1,24 +1,38 @@
 #!/usr/bin/env python3.11
 
-from __future__ import annotations
+"""
+Train agents on different environments and setups.
+"""
 
+import re
+import dataclasses
+import re
 import json
 import random
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 from pprint import pprint
+from typing import Callable, Generator
+import warnings
 
 import click
+import gymnasium as gym
+import torchinfo
 import wandb
 from joblib import Parallel, delayed
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from torch import nn
 
-import __init__ as M
+import __init__ as src
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
 MODELS_DIR = ROOT / "models"
+
+# Remove UserWarning in LazyModules about it being an experimental feature
+warnings.filterwarnings("ignore", module="torch.nn.modules.lazy")
 
 
 def find_filename(directory: Path, prefix: str = "", ext="zip") -> Path:
@@ -29,162 +43,326 @@ def find_filename(directory: Path, prefix: str = "", ext="zip") -> Path:
     return directory / f"{prefix}{idx}.{ext}"
 
 
-def blind_3_goals_one_hot(
-        total_timesteps: int = 400_000,
-        n_envs: int = 4,
-        n_evals: int = 10_000,
-        *,
-        # Hyperparameters
-        env_size: int = 4,
-        initial_lr: float = 1e-3,
-        final_wd: float = 8e-4,
-        seed: int | None = None,
-        # Meta-options
-        use_wandb: bool = True,
-):
-    """Train a PPO agent on given environment"""
+def apply_all(decorators):
+    """Apply all the decorators to a function"""
 
-    # Set the random seed
-    if seed is None:
-        seed = random.randint(0, 2 ** 32 - 1)
+    def _decorator(f):
+        for opt in reversed(list(decorators)):
+            f = opt(f)
+        return f
 
-    args = dict(locals())
-    pprint(args)
+    return _decorator
 
-    # Define the architecture
-    arch = nn.Sequential(
-        M.Split(
-            -3,
-            left=nn.Sequential(
-                M.Rearrange("... (h w c) -> ... c h w", h=env_size, w=env_size, c=5),
-                nn.Conv2d(5, 8, 3, padding=1),
-                nn.ReLU(),
-                nn.Conv2d(8, 8, 3, padding=1),
-                nn.ReLU(),
-                nn.Flatten(-3),
-            ),
-            right=nn.Identity(),
-        ),
-        nn.LazyLinear(32),
-        nn.ReLU(),
-        nn.Linear(32, 32),
-        nn.ReLU(),
+
+@dataclass
+class Experiment(ABC):
+    """
+    Abstract class for an experiment
+    """
+
+    total_timesteps: int = field(
+        default=400_000,
+        metadata=dict(help="Number of steps to train the agent for")
+    )
+    n_envs: int = field(
+        default=4,
+        metadata=dict(help="Number of environments to train on"),
+    )
+    n_evals: int = field(
+        default=10_000,
+        metadata=dict(help="Number of episodes to evaluate the agent on"),
+    )
+    initial_lr: float = field(
+        default=1e-3,
+        metadata=dict(help="Learning rate"),
+    )
+    final_wd: float = field(
+        default=8e-4,
+        metadata=dict(help="Weight decay"),
+    )
+    use_wandb: bool = field(
+        default=True,
+        metadata=dict(help="Disable wandb"),
+    )
+    env_size: int = field(
+        default=4,
+        metadata=dict(help="Size of the environment"),
+    )
+    seed: int = field(
+        default=None,
+        metadata=dict(help="Seed to use"),
     )
 
-    # Define the environment
-    mk_env_generator = lambda full_color: M.wrap(
-        lambda: M.ThreeGoalsEnv(env_size, step_reward=0.0),
-        # lambda e: M.ColorBlindWrapper(e, reduction='max', reward_indistinguishable_goals=True, disabled=full_color),
-        lambda e: M.OneHotColorBlindWrapper(e, reward_indistinguishable_goals=True, disabled=full_color),
-        lambda e: M.AddTrueGoalToObsFlat(e),
-    )
-    mk_env = mk_env_generator(full_color=False)
-    mk_env_full_color = mk_env_generator(full_color=True)
+    @classmethod
+    def name(cls) -> str:
+        """Return the name of the experiment"""
+        # Convert CamelCase to snake_case
+        return re.sub(r'(?<!^)(?=[A-Z])', '_', cls.__name__).lower()
 
-    # Define the policy network
-    policy = PPO(
-        M.CustomActorCriticPolicy,
-        make_vec_env(mk_env, n_envs=n_envs),
-        policy_kwargs=dict(
-            arch=M.L1WeightDecay(arch, 0),
-            optimizer_kwargs=dict(weight_decay=0),
-        ),
-        n_steps=2_048 // n_envs,
-        tensorboard_log=str(ROOT / "run_logs"),
-        learning_rate=lambda f: f * initial_lr,
-        seed=seed,
-        device='cpu',
-    )
-    args['num_params'] = sum(p.numel() for p in policy.policy.parameters())
 
-    # Start wandb and define callbacks
-    callbacks = [M.ProgressBarCallback(),
-                 M.WeightDecayCallback(lambda f: (1 - f) * final_wd)]
+    def run(self):
+        """Run one instance of the experiment"""
 
-    if use_wandb:
-        wandb.init(
-            sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
-            save_code=True,
-            config=args,
+        if self.seed is None:
+            seed = random.randint(0, 2 ** 32 - 1)
+            args = {**dataclasses.asdict(self), "seed": seed}
+        else:
+            seed = self.seed
+            args = dataclasses.asdict(self)
+
+        # Define the policy network
+        policy = PPO(
+            src.CustomActorCriticPolicy,
+            make_vec_env(self.get_train_env, n_envs=self.n_envs),
+            policy_kwargs=dict(arch=self.get_arch()),
+            n_steps=2_048 // self.n_envs,
+            tensorboard_log=str(ROOT / "run_logs"),
+            learning_rate=lambda f: f * self.initial_lr,
+            seed=seed,
+            device='cpu',
         )
-        callbacks.append(M.WandbWithBehaviorCallback(mk_env()))
 
-    # Train the agent
-    policy.learn(
-        total_timesteps=total_timesteps,
-        callback=callbacks,
-    )
+        # Start wandb and define callbacks
+        callbacks = [src.ProgressBarCallback(),
+                     src.WeightDecayCallback(lambda f: (1 - f) * self.final_wd)]
+        if self.use_wandb:
+            wandb.init(
+                sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
+                save_code=True,
+                config=args,
+                project=self.name(),
+            )
+            callbacks.append(src.WandbWithBehaviorCallback(self.get_eval_env()))
 
-    # Evaluate the agent
-    stats = {
-        name: M.make_stats(policy, env, n_episodes=n_evals,
-                           wandb_name=name if use_wandb else None, plot=False)
-        for name, env in [
-            ("blind", mk_env()),
-            ("full_color", mk_env_full_color()),
-        ]
-    }
+        # Train the agent
+        policy.learn(
+            total_timesteps=self.total_timesteps,
+            callback=callbacks,
+        )
 
-    # Log the evaluation stats
-    if use_wandb:
-        wandb.log({
-            f"eval/{type_}/true_goal_{true_goal}/end_type_{end_type}": stat[tg, et]
-            for tg, true_goal in enumerate(["red", "green", "blue"])
-            for et, end_type in enumerate(["red", "green", "blue", "no goal"])
+        evaluation = self.evaluate(policy)
+        # Log the evaluation stats
+        if self.use_wandb:
+            wandb.log(evaluation)
+            wandb.finish()
+
+        self.save(policy, dict(
+            eval=evaluation,
+            args=args,
+        ))
+
+    @abstractmethod
+    def get_arch(self) -> nn.Module:
+        """Return the architecture of the policy network"""
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_train_env(self) -> gym.Env:
+        """Return the training environment"""
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_eval_env(self) -> gym.Env:
+        """Return the evaluation environment"""
+        raise NotImplementedError()
+
+    @abstractmethod
+    def evaluate(self, policy) -> dict[str, object]:
+        """Evaluate the agent. Return a json serializable dictionary of evaluation stats."""
+        raise NotImplementedError()
+
+    def save(self, policy, metadata):
+        """Save the model and metadata"""
+        # Save the agent
+        filename = find_filename(MODELS_DIR / self.name())
+        for name, m in policy.policy.named_modules():
+            if hasattr(m, "logger"):
+                # We stored it on the WeightDecay modules...
+                del m.logger
+        policy.save(filename)
+
+        # Save the stats
+        json.dump(metadata, filename.with_suffix(".json").open("w"))
+
+        print(f"Saved model to {filename}")
+        return filename
+
+    @classmethod
+    def all_experiments(cls) -> Generator["Experiment", None, None]:
+        """Return all experiments classes"""
+
+        if cls is not Experiment:
+            yield cls
+
+        for subclass in cls.__subclasses__():
+            yield from subclass.all_experiments()
+
+    @classmethod
+    def make_command(cls):
+        """Return a click command for this experiment"""
+
+        assert cls.__doc__ is not None, f"Docstring must be defined for {cls}"
+
+        @cli.command(name=cls.name(), help=cls.__doc__)
+        @apply_all(
+            click.option("--" + arg.name.replace("_", "-"),
+                         type=arg.type,
+                         default=arg.default,
+                         show_default=True,
+                         **arg.metadata)
+            for arg in dataclasses.fields(cls)
+        )
+        # Meta options
+        @click.option("--n-agents", default=1, help="Number of agents to train")
+        @click.option("--jobs", default=1, help="Number of jobs to run in parallel")
+        @click.option("--dry-run", is_flag=True, help="Don't actually run the experiment")
+        def _cmd(jobs, n_agents, dry_run, **kwargs):
+
+            experiment = cls(**kwargs)
+
+            if dry_run:
+                click.secho(f"Dry run {cls.name()} with args:", fg="yellow")
+                pprint(dataclasses.asdict(experiment))
+                click.secho("Environment:", fg="yellow")
+                env = experiment.get_train_env()
+                print(env)
+                obs, _ = env.reset()
+                print(f"Observation shape: {obs.shape}")
+                print("Architecture:")
+                torchinfo.summary(experiment.get_arch(), input_size=obs.shape, depth=99)
+                return
+
+            if n_agents != 1:
+                Parallel(n_jobs=jobs)(delayed(experiment.run)() for _ in range(n_agents))
+            else:
+                experiment.run()
+
+        return _cmd
+
+
+class BlindThreeGoalsOneHot(Experiment):
+    """
+    Blind one-hot version of ThreeGoalsEnv
+
+    The agent is trained on a color-blind version of the environment, where the agent
+    cannot distinguish between red and green, that is, whenever a cell contains a red
+    or green goal, the agent sees a 1 in both the red and green channels.
+    """
+
+    def get_arch(self) -> nn.Module:
+        arch = nn.Sequential(
+            src.Split(
+                -3,
+                left=nn.Sequential(
+                    src.Rearrange("... (h w c) -> ... c h w", h=self.env_size, w=self.env_size),
+                    nn.LazyConv2d(8, 3, padding=1),
+                    nn.ReLU(),
+                    nn.Conv2d(8, 8, 3, padding=1),
+                    nn.ReLU(),
+                    nn.Flatten(-3),
+                ),
+                right=nn.Identity(),
+            ),
+            nn.LazyLinear(32),
+            nn.ReLU(),
+            nn.Linear(32, 32),
+            nn.ReLU(),
+        )
+        arch = src.L1WeightDecay(arch, 0)
+        return arch
+
+    def get_env(self, full_color: bool) -> Callable[[], gym.Env]:
+        """Return a function that returns the environment"""
+        return src.wrap(
+            lambda: src.ThreeGoalsEnv(self.env_size, step_reward=0.0),
+            lambda env: src.OneHotColorBlindWrapper(env, reward_indistinguishable_goals=True, disabled=full_color),
+            lambda env: src.AddTrueGoalToObsFlat(env),
+        )
+
+    def get_train_env(self) -> gym.Env:
+        return self.get_env(full_color=False)()
+
+    def get_eval_env(self) -> gym.Env:
+        return self.get_env(full_color=True)()
+
+    def evaluate(self, policy) -> dict[str, object]:
+        # Evaluate the agent
+        stats = {
+            name: src.make_stats(policy, env, n_episodes=self.n_evals,
+                                 wandb_name=name if self.use_wandb else None, plot=False)
+            for name, env in [
+                ("blind", self.get_train_env()),
+                ("full_color", self.get_eval_env()),
+            ]
+        }
+
+        return {
+            type_: {
+                f"true_goal_{true_goal}": {
+                    f"end_type_{end_type}": stat[tg, et]
+                    for et, end_type in enumerate(["red", "green", "blue", "no goal"])
+                }
+                for tg, true_goal in enumerate(["red", "green", "blue"])
+            }
             for type_, stat in stats.items()
-        })
-        wandb.finish()
-
-    # Save the agent
-    filename = find_filename(MODELS_DIR / "3-goal-blind-one-hot")
-    for name, m in policy.policy.named_modules():
-        if hasattr(m, "logger"):
-            # We stored it on the WeightDecay modules...
-            del m.logger
-    policy.save(filename)
-
-    # Save the stats
-    to_save = {
-        "stats_blind": stats["blind"].tolist(),
-        "stats_full_color": stats["full_color"].tolist(),
-        **args,
-    }
-    json.dump(to_save, filename.with_suffix(".json").open("w"))
-
-    print(f"Saved model to {filename}")
-
-    return None
+        }
 
 
-EXPERIMENTS = [
-    get_agent_3_goal_blind,
-]
+class BlindThreeGoalsRgbChannelReg(BlindThreeGoalsOneHot):
+    """
+    Blind RGB version of ThreeGoalsEnv with channel regularization
+
+    The agent is trained on a color-blind version of the environment, where the agent
+    cannot distinguish between red and green channels of the image, but only the max
+    of the two.
+    The first convolutional layer has the channel with the lowest norm regularized
+    strongly.
+    """
+
+    def __init__(self, *, initial_lr: float = 0.1, **kwargs):
+        super().__init__(initial_lr=initial_lr, **kwargs)
+
+    def get_arch(self) -> nn.Module:
+        # Define the architecture
+        return nn.Sequential(
+            src.Split(
+                -3,
+                left=nn.Sequential(
+                    src.Rearrange("... (h w c) -> ... c h w", h=self.env_size, w=self.env_size),
+                    src.PerChannelL1WeightDecay(
+                        nn.LazyConv2d(8, 3, padding=1),
+                        0,
+                        name_filter="weight",
+                    ),
+                    nn.ReLU(),
+                    nn.Conv2d(8, 8, 3, padding=1),
+                    nn.ReLU(),
+                    nn.Flatten(-3),
+                ),
+                right=nn.Identity(),
+            ),
+            nn.LazyLinear(32),
+            nn.ReLU(),
+            nn.Linear(32, 32),
+            nn.ReLU(),
+        )
+
+    def get_env(self, full_color: bool) -> Callable[[], gym.Env]:
+        return src.wrap(
+            lambda: src.ThreeGoalsEnv(self.env_size, step_reward=0.0),
+            lambda env: src.ColorBlindWrapper(env, reduction='max',
+                                              reward_indistinguishable_goals=True, disabled=full_color),
+            lambda env: src.AddTrueGoalToObsFlat(env),
+        )
 
 
-@click.command()
-@click.argument("experiment", type=click.Choice([e.__name__ for e in EXPERIMENTS]))
-@click.option("--total-timesteps", "--steps", type=int, help="Number of steps to train the agent for")
-@click.option("--n-envs", type=int, help="Number of environments to train on")
-@click.option("--env-size", type=int, help="Size of the environment")
-@click.option("--n-evals", type=int, help="Number of episodes to evaluate the agent on")
-@click.option("--initial-lr", "--lr", type=float, help="Learning rate")
-@click.option("--final-wd", "--wd", type=float, help="Weight decay")
-@click.option("--use-wandb/--no-wandb", is_flag=True, help="Disable wandb")
-@click.option("--n-agents", default=1, help="Number of agents to train")
-@click.option("--jobs", default=1, help="Number of jobs to run in parallel")
-def train(experiment: str, jobs: int, n_agents: int, **kwargs):
-    """Train a PPO agent on the SimpleEnv environment"""
+@click.group()
+def cli():
+    """Train agents on different environments and setups."""
 
-    # Remove None values
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
-    exp = next(e for e in EXPERIMENTS if e.__name__ == experiment)
-
-    if n_agents != 1:
-        Parallel(n_jobs=jobs)(delayed(exp)(**kwargs) for _ in range(n_agents))
-    else:
-        exp(**kwargs)
-
+for e in Experiment.all_experiments():
+    cli.add_command(e.make_command())
 
 if __name__ == "__main__":
-    train()
+    cli()

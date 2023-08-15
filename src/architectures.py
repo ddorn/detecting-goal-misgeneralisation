@@ -155,7 +155,7 @@ class PerChannelL1WeightDecay(WeightDecay):
         assert parameter.dim() == 4, f"Got a parameter with shape {parameter.shape}, expected (out, in, h, w)"
         per_channel_norm = einops.reduce(
             parameter.data.abs(),
-            "out in h w -> in",
+            "out input h w -> input",
             reduction="max",
         )
 
@@ -280,8 +280,6 @@ class CustomPolicyValueNetwork(nn.Module):
         policy_out, value_out = self.forward(obs)
         self.latent_dim_pi = policy_out.shape[-1]
         self.latent_dim_vf = value_out.shape[-1]
-        print("policy_out", policy_out.shape)
-        print("value_out", value_out.shape)
 
     def forward(self, features) -> tuple[Tensor, Tensor]:
         """
@@ -317,11 +315,6 @@ class CustomActorCriticPolicy(ActorCriticPolicy):
             *args,
             **kwargs,
     ):
-        print("SwitchActorCriticPolicy init")
-        print("Observation space", observation_space)
-        print("Action space", action_space)
-        print("Arch kwargs")
-        pprint(kwargs)
 
         if isinstance(arch, nn.Module):
             arch = (arch, None)
