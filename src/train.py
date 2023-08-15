@@ -21,7 +21,15 @@ ROOT = HERE.parent
 MODELS_DIR = ROOT / "models"
 
 
-def get_agent_3_goal_blind(
+def find_filename(directory: Path, prefix: str = "", ext="zip") -> Path:
+    """Find the first available filename with the given prefix"""
+    idx = 0
+    while (directory / f"{prefix}{idx}.{ext}").exists():
+        idx += 1
+    return directory / f"{prefix}{idx}.{ext}"
+
+
+def blind_3_goals_one_hot(
         total_timesteps: int = 400_000,
         n_envs: int = 4,
         n_evals: int = 10_000,
@@ -33,10 +41,15 @@ def get_agent_3_goal_blind(
         seed: int | None = None,
         # Meta-options
         use_wandb: bool = True,
-        save: bool = True,
-        return_perfs: bool = True,
 ):
     """Train a PPO agent on given environment"""
+
+    # Set the random seed
+    if seed is None:
+        seed = random.randint(0, 2 ** 32 - 1)
+
+    args = dict(locals())
+    pprint(args)
 
     # Define the architecture
     arch = nn.Sequential(
@@ -68,10 +81,6 @@ def get_agent_3_goal_blind(
     mk_env = mk_env_generator(full_color=False)
     mk_env_full_color = mk_env_generator(full_color=True)
 
-    # Set the random seed
-    if seed is None:
-        seed = random.randint(0, 2 ** 32 - 1)
-
     # Define the policy network
     policy = PPO(
         M.CustomActorCriticPolicy,
@@ -86,24 +95,17 @@ def get_agent_3_goal_blind(
         seed=seed,
         device='cpu',
     )
+    args['num_params'] = sum(p.numel() for p in policy.policy.parameters())
 
     # Start wandb and define callbacks
     callbacks = [M.ProgressBarCallback(),
                  M.WeightDecayCallback(lambda f: (1 - f) * final_wd)]
-    num_params = sum(p.numel() for p in policy.policy.parameters())
-    config = dict(
-        num_params=num_params,
-        initial_lr=initial_lr,
-        final_wd=final_wd,
-        seed=seed,
-        total_timesteps=total_timesteps,
-        n_envs=n_envs,
-    )
+
     if use_wandb:
         wandb.init(
             sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
             save_code=True,
-            config=config,
+            config=args,
         )
         callbacks.append(M.WandbWithBehaviorCallback(mk_env()))
 
@@ -112,9 +114,6 @@ def get_agent_3_goal_blind(
         total_timesteps=total_timesteps,
         callback=callbacks,
     )
-
-    if not return_perfs:
-        return policy
 
     # Evaluate the agent
     stats = {
@@ -136,78 +135,56 @@ def get_agent_3_goal_blind(
         })
         wandb.finish()
 
-    # Save the agent and stats
-    if save:
-        directory = MODELS_DIR / "3-goal-blind-one-hot"
-        idx = 0
-        while (directory / f"{idx}.zip").exists():
-            idx += 1
-        name = directory / f"{idx}.zip"
-        assert not name.exists()
-        policy.save(name)
+    # Save the agent
+    filename = find_filename(MODELS_DIR / "3-goal-blind-one-hot")
+    for name, m in policy.policy.named_modules():
+        if hasattr(m, "logger"):
+            # We stored it on the WeightDecay modules...
+            del m.logger
+    policy.save(filename)
 
-        to_save = {
-            "stats_blind": stats["blind"].tolist(),
-            "stats_full_color": stats["full_color"].tolist(),
-            **config,
-        }
-        json.dump(to_save, name.with_suffix(".json").open("w"))
-        pprint(to_save)
-        print(f"Saved model to {name}")
+    # Save the stats
+    to_save = {
+        "stats_blind": stats["blind"].tolist(),
+        "stats_full_color": stats["full_color"].tolist(),
+        **args,
+    }
+    json.dump(to_save, filename.with_suffix(".json").open("w"))
 
-    return policy, stats
+    print(f"Saved model to {filename}")
+
+    return None
+
+
+EXPERIMENTS = [
+    get_agent_3_goal_blind,
+]
 
 
 @click.command()
-@click.option("--steps", default=400_000, help="Number of steps to train the agent for")
+@click.argument("experiment", type=click.Choice([e.__name__ for e in EXPERIMENTS]))
+@click.option("--total-timesteps", "--steps", type=int, help="Number of steps to train the agent for")
+@click.option("--n-envs", type=int, help="Number of environments to train on")
+@click.option("--env-size", type=int, help="Size of the environment")
+@click.option("--n-evals", type=int, help="Number of episodes to evaluate the agent on")
+@click.option("--initial-lr", "--lr", type=float, help="Learning rate")
+@click.option("--final-wd", "--wd", type=float, help="Weight decay")
+@click.option("--use-wandb/--no-wandb", is_flag=True, help="Disable wandb")
 @click.option("--n-agents", default=1, help="Number of agents to train")
-@click.option("--n-envs", default=4, help="Number of environments to train on")
 @click.option("--jobs", default=1, help="Number of jobs to run in parallel")
-@click.option("--env-size", default=4, help="Size of the environment")
-@click.option("--n-evals", default=10_000, help="Number of episodes to evaluate the agent on")
-@click.option("--lr", default=1e-3, help="Learning rate")
-@click.option("--wd", default=8e-4, help="Weight decay")
-@click.option("--no-wandb", is_flag=True, help="Disable wandb")
-def train(
-        steps: int,
-        n_agents: int,
-        n_envs: int,
-        jobs: int,
-        env_size: int,
-        n_evals: int,
-        lr: float,
-        wd: float,
-        no_wandb: bool,
-):
+def train(experiment: str, jobs: int, n_agents: int, **kwargs):
     """Train a PPO agent on the SimpleEnv environment"""
 
-    def get():
-        get_agent_3_goal_blind(
-            total_timesteps=steps,
-            n_envs=n_envs,
-            env_size=env_size,
-            initial_lr=lr,
-            final_wd=wd,
-            use_wandb=not no_wandb,
-            n_evals=n_evals,
-        )
-        # Not returning anything to avoid pickling the agent for nothing
-        # Joblib also throws an error if the agent is returned (cannot pickle _thread.lock objects)
+    # Remove None values
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+
+    exp = next(e for e in EXPERIMENTS if e.__name__ == experiment)
 
     if n_agents != 1:
-        Parallel(n_jobs=jobs)(delayed(get)() for _ in range(n_agents))
+        Parallel(n_jobs=jobs)(delayed(exp)(**kwargs) for _ in range(n_agents))
     else:
-        get()
-
-
-def test():
-    get_agent_3_goal_blind(
-        total_timesteps=10_000,
-        use_wandb=False,
-        n_evals=100,
-    )
+        exp(**kwargs)
 
 
 if __name__ == "__main__":
     train()
-    # test()
