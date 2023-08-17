@@ -117,7 +117,7 @@ class Experiment(ABC):
         policy = PPO(
             src.CustomActorCriticPolicy,
             make_vec_env(self.get_train_env, n_envs=self.n_envs),
-            policy_kwargs=dict(arch=self.get_arch(), self.policy_kwargs()),
+            policy_kwargs=dict(arch=self.get_arch(), **self.policy_kwargs()),
             n_steps=2_048 // self.n_envs,
             tensorboard_log=str(ROOT / "run_logs"),
             learning_rate=lambda f: f * self.initial_lr,
