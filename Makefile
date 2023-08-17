@@ -4,4 +4,4 @@ deploy:
 
 
 bring-agents-back:
-	rsync -azPr "csft:kasl/agents/*" agents/
+	rsync -azPr "csft:kasl/models/blind_three_goals_rgb_channel_reg/*" models/blind_three_goals_rgb_channel_reg

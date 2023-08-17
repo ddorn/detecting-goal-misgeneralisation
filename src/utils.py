@@ -347,7 +347,7 @@ def sample_trajectories(
 
 def evaluate(policy_, env_: ThreeGoalsEnv,
              n_episodes=1000, max_len=20, show_n=30,
-             add_to_wandb=False, plot=True):
+             add_to_wandb=False, plot=True, **plotly_kwargs):
     """Return the proportion of episodes where the agent reached the true goal."""
     found = 0
     terminated = 0
@@ -376,7 +376,8 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
         to_show = sample_trajectories(*samples.values(), n_trajectories=show_n)
         title = f"Got reward: {got_reward:.1%} | Truncated: {no_goal:.1%} | Wrong goal: {wrong_goal:.1%}"
         show_behavior(policy_, to_show,
-                      add_to_wandb=add_to_wandb, title=title, plot=plot)
+                      add_to_wandb=add_to_wandb, title=title, plot=plot,
+                        **plotly_kwargs)
 
     return {
         "Got reward": got_reward,

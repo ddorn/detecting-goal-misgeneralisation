@@ -2,3 +2,4 @@ from wrappers import AddTrueGoalToObsFlat, ColorBlindWrapper, OneHotColorBlindWr
 from environments import GridEnv, ThreeGoalsEnv, RandomGoalEnv, Cell
 from architectures import *
 from utils import *
+from baselines import *
