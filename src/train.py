@@ -117,7 +117,7 @@ class Experiment(ABC):
         policy = PPO(
             src.CustomActorCriticPolicy,
             make_vec_env(self.get_train_env, n_envs=self.n_envs),
-            policy_kwargs=dict(arch=self.get_arch()),
+            policy_kwargs=dict(arch=self.get_arch(), self.policy_kwargs()),
             n_steps=2_048 // self.n_envs,
             tensorboard_log=str(ROOT / "run_logs"),
             learning_rate=lambda f: f * self.initial_lr,
@@ -154,6 +154,10 @@ class Experiment(ABC):
             wandb.config.filename = filename
             wandb.log(evaluation, commit=False)
             wandb.finish()
+
+    def policy_kwargs(self) -> dict[str, object]:
+        """Return the keyword arguments to pass to the policy"""
+        return {}
 
     @abstractmethod
     def get_arch(self) -> nn.Module:
@@ -284,6 +288,12 @@ class BlindThreeGoalsOneHot(Experiment):
         )
         arch = src.L1WeightDecay(arch, 0)
         return arch
+
+    def policy_kwargs(self) -> dict[str, object]:
+        # We use L1 weight decay, not L2 here
+        return dict(
+            optimizer_kwargs=dict(weight_decay=0),
+        )
 
     def get_env(self, full_color: bool) -> Callable[[], gym.Env]:
         """Return a function that returns the environment"""
