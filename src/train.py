@@ -8,7 +8,6 @@ import dataclasses
 import json
 import random
 import re
-import typing as t
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -26,7 +25,10 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
 from torch import nn
 
-import __init__ as src
+try:
+    import src
+except ModuleNotFoundError:
+    import __init__ as src
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
@@ -97,6 +99,7 @@ class Experiment(ABC):
     @classmethod
     def name(cls) -> str:
         """Return the name of the experiment"""
+        assert cls is not Experiment, "The base class Experiment should not be used directly."
         # Convert CamelCase to snake_case
         return re.sub(r'(?<!^)(?=[A-Z])', '_', cls.__name__).lower()
 
@@ -140,15 +143,17 @@ class Experiment(ABC):
         )
 
         evaluation = self.evaluate(policy)
-        # Log the evaluation stats
-        if self.use_wandb:
-            wandb.log(evaluation)
-            wandb.finish()
 
-        self.save(policy, dict(
+        filename = self.save(policy, dict(
             eval=evaluation,
             args=args,
         ))
+
+        # Log the evaluation stats, filename, and exit
+        if self.use_wandb:
+            wandb.config.filename = filename
+            wandb.log(evaluation, commit=False)
+            wandb.finish()
 
     @abstractmethod
     def get_arch(self) -> nn.Module:
@@ -186,6 +191,14 @@ class Experiment(ABC):
 
         print(f"Saved model to {filename}")
         return filename
+
+    @classmethod
+    def load(cls, idx: int) -> tuple[PPO, dict]:
+        """Load the model and metadata"""
+        filename = MODELS_DIR / cls.name() / f"{idx}.zip"
+        metadata = json.load(filename.with_suffix(".json").open("r"))
+        policy = PPO.load(filename)
+        return policy, metadata
 
     @classmethod
     def all_experiments(cls) -> Generator["Experiment", None, None]:

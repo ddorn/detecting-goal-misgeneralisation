@@ -4,7 +4,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import groupby
-from typing import TypeVar, Callable, Literal, Union, TYPE_CHECKING, Dict, Any
+from typing import TypeVar, Callable, Literal, Union, TYPE_CHECKING
 
 import einops
 import gymnasium as gym
@@ -13,6 +13,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import pygame.gfxdraw
 import torch
+import wandb
 from jaxtyping import Float
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
@@ -20,9 +21,8 @@ from torch import nn, Tensor
 from tqdm.autonotebook import tqdm
 from wandb.integration.sb3 import WandbCallback
 
-import wandb
-
 import architectures
+import environments
 
 if TYPE_CHECKING:
     from environments import ThreeGoalsEnv
@@ -136,7 +136,7 @@ class Trajectory:
 
 
 def show_behavior(
-        policy: PPO,
+        policy,
         env: gym.Env | list[gym.Env] | list[Trajectory],
         n_trajectories: int = 10,
         max_len: int = 10,
@@ -166,7 +166,7 @@ def show_behavior(
     imgs = einops.rearrange(trajectories, "traj step h w c -> (traj h) (step w) c")
 
     if add_to_wandb:
-        wandb.log({f"behavior": wandb.Image(imgs)})
+        wandb.log({f"behavior": wandb.Image(imgs)}, commit=False)
 
     if plot:
         plotly_kwargs.setdefault("height", imgs.shape[0] // 2)
@@ -192,6 +192,14 @@ class Cache(dict[str, Tensor]):
         elif len(keys) > 1:
             raise KeyError(f"Multiple keys match {item}: {keys}")
         return super().__getitem__(keys[0])
+
+    def remove_batch_dim(self):
+        """Remove the batch dimension from all activations."""
+        if any(activation.shape[0] != 1 for activation in self.values()):
+            raise ValueError("Not all activations have batch dimension 1.")
+
+        for name, activation in self.items():
+            self[name] = activation.squeeze(0)
 
 
 @contextmanager
@@ -235,6 +243,7 @@ def record_activations(module: nn.Module) -> Cache:
         print("-", name)
 
 
+# noinspection PyDefaultArgument
 def unique(x, *, __previous=set()):
     """Return the argument, if it was never seen before, otherwise raise ValueError"""
     if x in __previous:
@@ -394,7 +403,7 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
     }
 
 
-def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100, subtitle: str = "",
+def make_stats(policy, env: environments.ThreeGoalsEnv, n_episodes=100, subtitle: str = "",
                wandb_name: str = None, plot: bool = True) -> Float[
     torch.Tensor, "true_goal=3 end_pos=4"]:
     """
@@ -452,7 +461,7 @@ def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100, subtitle: str 
     )
 
     if wandb_name:
-        wandb.log({wandb_name: fig})
+        wandb.log({wandb_name: fig}, commit=False)
     if plot:
         fig.show()
 
