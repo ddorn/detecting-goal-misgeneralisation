@@ -4,17 +4,17 @@
 Train agents on different environments and setups.
 """
 
-import re
 import dataclasses
-import re
 import json
 import random
+import re
+import typing as t
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from pprint import pprint
 from typing import Callable, Generator
-import warnings
 
 import click
 import gymnasium as gym
@@ -22,6 +22,7 @@ import torchinfo
 import wandb
 from joblib import Parallel, delayed
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
 from torch import nn
 
@@ -122,8 +123,7 @@ class Experiment(ABC):
         )
 
         # Start wandb and define callbacks
-        callbacks = [src.ProgressBarCallback(),
-                     src.WeightDecayCallback(lambda f: (1 - f) * self.final_wd)]
+        callbacks = [src.ProgressBarCallback(), *self.get_callbacks()]
         if self.use_wandb:
             wandb.init(
                 sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
@@ -170,17 +170,18 @@ class Experiment(ABC):
         """Evaluate the agent. Return a json serializable dictionary of evaluation stats."""
         raise NotImplementedError()
 
+    def get_callbacks(self) -> list[BaseCallback]:
+        """Return a list of SB3 callbacks to use during training."""
+        return [
+            src.LogChannelNormsCallback(),
+            src.WeightDecayCallback(lambda f: (1 - f) * self.final_wd),
+        ]
+
     def save(self, policy, metadata):
         """Save the model and metadata"""
-        # Save the agent
         filename = find_filename(MODELS_DIR / self.name())
-        for name, m in policy.policy.named_modules():
-            if hasattr(m, "logger"):
-                # We stored it on the WeightDecay modules...
-                del m.logger
         policy.save(filename)
 
-        # Save the stats
         json.dump(metadata, filename.with_suffix(".json").open("w"))
 
         print(f"Saved model to {filename}")
@@ -200,7 +201,7 @@ class Experiment(ABC):
     def make_command(cls):
         """Return a click command for this experiment"""
 
-        assert cls.__doc__ is not None, f"Docstring must be defined for {cls}"
+        assert cls.__doc__ is not None, f"Docstring must be defined for {cls.__name__}"
 
         @cli.command(name=cls.name(), help=cls.__doc__)
         @apply_all(
@@ -249,7 +250,7 @@ class BlindThreeGoalsOneHot(Experiment):
     or green goal, the agent sees a 1 in both the red and green channels.
     """
 
-    def get_arch(self) -> nn.Module:
+    def get_arch(self):
         arch = nn.Sequential(
             src.Split(
                 -3,
@@ -285,15 +286,18 @@ class BlindThreeGoalsOneHot(Experiment):
     def get_eval_env(self) -> gym.Env:
         return self.get_env(full_color=True)()
 
+    def _eval_envs(self) -> dict[str, gym.Env]:
+        return {
+            "blind": self.get_train_env(),
+            "full_color": self.get_eval_env(),
+        }
+
     def evaluate(self, policy) -> dict[str, object]:
         # Evaluate the agent
         stats = {
             name: src.make_stats(policy, env, n_episodes=self.n_evals,
                                  wandb_name=name if self.use_wandb else None, plot=False)
-            for name, env in [
-                ("blind", self.get_train_env()),
-                ("full_color", self.get_eval_env()),
-            ]
+            for name, env in self._eval_envs().items()
         }
 
         return {
@@ -362,7 +366,54 @@ class BlindThreeGoalsRgbChannelReg(BlindThreeGoalsOneHot):
         )
 
 
-@click.group()
+@dataclass
+class BlindThreeGoalWeightedChannel(BlindThreeGoalsOneHot):
+    """
+    Blind RGB version of ThreeGoalsEnv with weighted channels
+
+    The agent is trained on a color-blind version of the environment, where the agent
+    cannot distinguish between red and green channels of the image, but only the max
+    of the two. However, the green channel is then multiplied by a weight.
+    """
+
+    green_weight: float = field(
+        default=0.5,
+        metadata=dict(help="Weight of the green channel"),
+    )
+
+    def get_arch(self) -> nn.Module:
+        arch = super().get_arch()
+        # We use the same architecture, but without the L1WeightDecay wrapping it
+        arch.remove()
+        return arch.module
+
+    def get_callbacks(self) -> list[BaseCallback]:
+        # We don't want to use the L1WeightDecay callback
+        # But still log the norm of Conv1
+        return [
+            src.LogChannelNormsCallback(),
+        ]
+
+    def get_env(self, full_color: bool, weighted: bool = True) -> Callable[[], gym.Env]:
+        weights = [1.0, self.green_weight, 1.0]
+        return src.wrap(
+            lambda: src.ThreeGoalsEnv(self.env_size, step_reward=0.0),
+            lambda env: src.ColorBlindWrapper(env, reduction='max',
+                                              reward_indistinguishable_goals=True, disabled=full_color),
+            lambda env: src.WeightedChannelWrapper(env, weights, disabled=not weighted),
+            lambda env: src.AddTrueGoalToObsFlat(env),
+        )
+
+    def _eval_envs(self) -> dict[str, gym.Env]:
+        return {
+            "blind_weighted": self.get_env(full_color=False)(),
+            "full_color_weighted": self.get_env(full_color=True)(),
+            "blind_non_weighted": self.get_env(full_color=False, weighted=False)(),
+            "full_color_non_weighted": self.get_env(full_color=True, weighted=False)(),
+        }
+
+
+@click.group(context_settings=dict(max_content_width=200))
 def cli():
     """Train agents on different environments and setups."""
 

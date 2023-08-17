@@ -5,7 +5,7 @@ Wrappers for grid environments.
 from __future__ import annotations
 
 import math
-from typing import Callable, TypeVar, SupportsFloat, Any
+from typing import Callable, TypeVar, SupportsFloat, Any, Iterable
 
 import gymnasium as gym
 import numpy as np
@@ -21,6 +21,7 @@ __all__ = [
     "AddSwitch",
     "ColorBlindWrapper",
     "OneHotColorBlindWrapper",
+    "WeightedChannelWrapper",
     "AddTrueGoalToObsFlat",
 ]
 
@@ -223,6 +224,30 @@ class OneHotColorBlindWrapper(BaseBlindWrapper):
             one_hot[..., self.merge_channels] = one_hot[..., self.merge_channels].any(axis=-1, keepdims=True)
 
         return one_hot
+
+class WeightedChannelWrapper(ObservationWrapper):
+    """
+    This wrapper takes a gridworld image and weights each channel differently.
+
+    Input: Box((width, height, n_channels))
+    Output: Box((width, height, n_channels))
+    """
+
+    def __init__(self, env, weights: Iterable[float], disabled: bool = False):
+        super().__init__(env)
+        self.disabled = disabled
+        obs = env.observation_space
+        assert isinstance(obs, gym.spaces.Box), f"{self.__class__.__name__} expected Box, got {obs}"
+        assert len(obs.shape) == 3, obs
+        assert obs.shape[-1] == len(weights), f"Expected {len(weights)} channels, got {obs.shape[-1]}"
+
+        self.weights = np.array(weights, dtype=obs.dtype)
+
+    def observation(self, obs: np.ndarray):
+        if self.disabled:
+            return obs
+        else:
+            return obs * self.weights
 
 
 class AddTrueGoalToObsFlat(ObservationWrapper):

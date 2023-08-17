@@ -286,6 +286,7 @@ class ProgressBarCallback(BaseCallback):
 
 class WeightDecayCallback(BaseCallback):
     """Callback to schedule L1 weight decay."""
+
     def __init__(self, schedule: Callable[[float], float]):
         super().__init__()
         self.schedule = schedule
@@ -298,8 +299,6 @@ class WeightDecayCallback(BaseCallback):
             # not work when the code is reloaded in a notebook.
             if any("WeightDecay" in c.__name__ for c in module.__class__.__mro__)
         ]
-        for module in self.modules_to_decay:
-            module.logger = self.logger
         assert len(self.modules_to_decay) > 0, "No modules to decay"
 
     def _on_rollout_end(self) -> None:
@@ -311,6 +310,15 @@ class WeightDecayCallback(BaseCallback):
             module.weight_decay = wd
 
     def _on_step(self) -> bool:
+        return True
+
+
+class LogChannelNormsCallback(BaseCallback):
+    def _on_step(self) -> bool:
+        conv1 = next(m for m in self.model.policy.modules() if isinstance(m, nn.Conv2d))
+        by_in_channel = conv1.weight.norm(2, dim=(0, 2, 3))
+        for i, norm in enumerate(by_in_channel):
+            self.logger.record(f"train/channel_norm/{i}", norm.item())
         return True
 
 
@@ -377,7 +385,7 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
         title = f"Got reward: {got_reward:.1%} | Truncated: {no_goal:.1%} | Wrong goal: {wrong_goal:.1%}"
         show_behavior(policy_, to_show,
                       add_to_wandb=add_to_wandb, title=title, plot=plot,
-                        **plotly_kwargs)
+                      **plotly_kwargs)
 
     return {
         "Got reward": got_reward,
@@ -387,7 +395,7 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
 
 
 def make_stats(policy: PPO, env: M.ThreeGoalsEnv, n_episodes=100, subtitle: str = "",
-               wandb_name: str=None, plot: bool = True) -> Float[
+               wandb_name: str = None, plot: bool = True) -> Float[
     torch.Tensor, "true_goal=3 end_pos=4"]:
     """
     Returns stats of where the policy ended, given the true goal.

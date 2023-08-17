@@ -159,10 +159,6 @@ class PerChannelL1WeightDecay(WeightDecay):
             reduction="max",
         )
 
-        if hasattr(self, "logger"):
-            for i, v in enumerate(per_channel_norm.tolist()):
-                self.logger.record(f"per_channel_norm_{i}", v)
-
         out = torch.zeros_like(parameter)
         # sorted_channels = torch.argsort(per_channel_norm)
         # num_small_channels = (per_channel_norm < 0.1).sum()
