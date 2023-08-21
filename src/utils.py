@@ -15,6 +15,7 @@ import pygame.gfxdraw
 import torch
 import wandb
 from jaxtyping import Float
+from sklearn.model_selection import train_test_split
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from torch import nn, Tensor
@@ -201,6 +202,11 @@ class Cache(dict[str, Tensor]):
         for name, activation in self.items():
             self[name] = activation.squeeze(0)
 
+    def apply(self, func: Callable[[Tensor], Tensor]):
+        """Apply a function to all activations."""
+        for name, activation in self.items():
+            self[name] = func(activation)
+
 
 @contextmanager
 def record_activations(module: nn.Module) -> Cache:
@@ -238,9 +244,10 @@ def record_activations(module: nn.Module) -> Cache:
         for hook in hooks:
             hook.remove()
 
-    print("Skipped:")
-    for name in skipped:
-        print("-", name)
+    if skipped:
+        print("Skipped:")
+        for name in skipped:
+            print("-", name)
 
 
 # noinspection PyDefaultArgument
@@ -466,3 +473,48 @@ def make_stats(policy, env: environments.ThreeGoalsEnv, n_episodes=100, subtitle
         fig.show()
 
     return stats
+
+
+def add_line(fig, equation: str):
+    minx, maxx = fig.data[0].x.min(), fig.data[0].x.max()
+
+    x = np.linspace(minx, maxx, 100)
+
+    # Parse equation
+    left, _, right = equation.partition("=")
+    if left.strip() == "y":
+        y = eval(right)
+    elif right.strip() == "y":
+        y = eval(left)
+    else:
+        raise ValueError(f"Equation {equation} should contain y on one side")
+
+    fig.add_trace(go.Scatter(
+        x=x,
+        y=y,
+        mode="lines",
+        line=dict(color="red", width=2),
+        # Add to legend
+        name=equation,
+    ))
+
+
+def show_fit(reg, x, y, title: str, xaxis: str, yaxis: str):
+    """Fit and show the fit of a regression model on a train and test set."""
+    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
+    reg.fit(x_train, y_train)
+
+    fig = go.Figure()
+    # Add the predictions on the train set, with a semi-transparent color
+    fig.add_scatter(x=y_train, y=reg.predict(x_train), mode="markers", marker=dict(color="rgba(255, 165, 0, 0.2)"), name="Train set")
+    # Add the predictions on the test set, with a blue color
+    fig.add_scatter(x=y_test, y=reg.predict(x_test), mode="markers", marker=dict(color="rgba(0, 0, 255, 1)"), name="Test set")
+    # Add the line y=x
+    add_line(fig, "y=x")
+    fig.update_layout(title=title + f"<br>R2 score: {reg.score(x_test, y_test):.3f} | Train size: {len(x_train)} | Test size: {len(x_test)} | Nvars: {len(x_train[0])}",
+                      xaxis_title=xaxis,
+                      yaxis_title=yaxis,
+                      width=1000)
+    fig.show()
+
+    return reg

@@ -17,6 +17,9 @@ from typing import Callable, Generator
 
 import click
 import gymnasium as gym
+import rich
+import rich.table
+import rich.console
 import torchinfo
 import wandb
 from joblib import Parallel, delayed
@@ -24,6 +27,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
 from torch import nn
+from tqdm.autonotebook import tqdm
 
 try:
     import src
@@ -147,6 +151,7 @@ class Experiment(ABC):
         filename = self.save(policy, dict(
             eval=evaluation,
             args=args,
+            id=wandb.run.id if self.use_wandb else None,
         ))
 
         # Log the evaluation stats, filename, and exit
@@ -256,6 +261,51 @@ class Experiment(ABC):
 
         return _cmd
 
+    @classmethod
+    def show_all_experiments(cls):
+        """Show all the experiments that have been run with summary statistics."""
+
+        table = rich.table.Table("Folder", "Nb runs", "Size",
+                                 "Experiment class",
+                                 title="Experiments",
+                                 caption=f"Experiments found in {MODELS_DIR}",
+                                 width=100,
+                                 )
+
+        experiments_by_name = {exp.name(): exp.__name__ for exp in cls.all_experiments()}
+
+        for exp in MODELS_DIR.iterdir():
+            n_runs = len(list(exp.glob("*.zip")))
+            if not n_runs:
+                continue
+
+            total_size = sum(f.stat().st_size for f in exp.glob("*.zip"))
+
+            # Find if this is an experiment folder
+            table.add_row(
+                exp.name,
+                str(n_runs),
+                f"{total_size / 1e6:.2f} MB",
+                experiments_by_name.get(exp.name, ""),
+            )
+
+        console = rich.console.Console(force_jupyter=False)
+        console.print(table, overflow="ignore", crop=False)
+
+
+    @classmethod
+    def load_all(cls) -> tuple[list[PPO], list[dict]]:
+        """Load all the runs for this experiment"""
+
+        folder = MODELS_DIR / cls.name()
+        to_load = sorted(folder.glob("*.zip"), key=lambda f: int(f.stem))
+
+        print("Loading", len(to_load), "models from", folder)
+        models = [PPO.load(file) for file in tqdm(to_load)]
+        stats = [json.load(file.with_suffix(".json").open()) for file in to_load]
+        assert len(models) == len(stats)
+        return models, stats
+
 
 @dataclass
 class BlindThreeGoalsOneHot(Experiment):
@@ -324,13 +374,9 @@ class BlindThreeGoalsOneHot(Experiment):
         }
 
         return {
-            type_: {
-                f"true_goal_{true_goal}": {
-                    f"end_type_{end_type}": stat[tg, et]
-                    for et, end_type in enumerate(["red", "green", "blue", "no goal"])
-                }
-                for tg, true_goal in enumerate(["red", "green", "blue"])
-            }
+            f"eval/{type_}/true_goal_{true_goal}/end_type_{end_type}": stat[tg, et]
+            for et, end_type in enumerate(["red", "green", "blue", "no goal"])
+            for tg, true_goal in enumerate(["red", "green", "blue"])
             for type_, stat in stats.items()
         }
 
