@@ -317,7 +317,9 @@ class ThreeGoalsEnv(GridEnv):
         self.true_goal_idx = -42
         self.goal_positions = [(-1, -1)] * 3
 
-        super().__init__(agent_pos, size, size, step_reward=step_reward)
+        super().__init__(agent_pos, size, size,
+                         max_steps=3 * size,
+                         step_reward=step_reward)
 
     @property
     def true_goal(self) -> Cell:
