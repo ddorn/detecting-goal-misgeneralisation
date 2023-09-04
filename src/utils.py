@@ -12,6 +12,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import pygame.gfxdraw
+import sklearn
 import torch
 import wandb
 from jaxtyping import Float
@@ -410,8 +411,58 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
     }
 
 
+def destination_stats(policy, env: gym.Env, n_episodes=100,
+                      ) -> tuple[
+    Float[Tensor, "step agent_pos=2"],
+    Float[Tensor, "step goal_type=3 goal_position=2"],
+    Float[Tensor, "step end_type=1"],
+    Float[Tensor, "step true_goal=1"],
+]:
+    """
+    Returns:
+        - the position of the agent
+        - the position of the goals (red, green, blue)
+        - the type of end (end on red, green, blue or did not find goal)
+        - the true goal
+    """
+    env: environments.ThreeGoalsEnv
+    assert isinstance(env.unwrapped, environments.ThreeGoalsEnv)
+
+    agent_pos = []
+    goal_positions = []
+    end_types = []
+    true_goals = []
+
+    for _ in tqdm(range(n_episodes)):
+        obs, _ = env.reset()
+        done = terminated = False
+        episode_len = 0
+        while not (done or terminated):
+            action, _ = policy.predict(obs)
+            obs, _, done, terminated, _ = env.step(action)
+
+            episode_len += 1
+            agent_pos.append(env.agent_pos)
+
+        try:
+            end_type = env.goal_positions.index(env.agent_pos)
+        except ValueError:
+            end_type = 3
+
+        end_types += [end_type] * episode_len
+        goal_positions += [env.goal_positions] * episode_len
+        true_goals += [env.true_goal_idx] * episode_len
+
+    return (
+        torch.tensor(agent_pos),
+        torch.tensor(goal_positions),
+        torch.tensor(end_types),
+        torch.tensor(true_goals),
+    )
+
+
 def make_stats(policy, env: environments.ThreeGoalsEnv, n_episodes=100, subtitle: str = "",
-               wandb_name: str = None, plot: bool = True) -> Float[torch.Tensor, "true_goal=3 end_pos=4"]:
+               wandb_name: str = None, plot: bool = True) -> Float[Tensor, "true_goal=3 end_pos=4"]:
     """
     Returns stats of where the policy ended, given the true goal.
     """
@@ -498,22 +549,61 @@ def add_line(fig, equation: str):
     ))
 
 
-def show_fit(reg, x, y, title: str, xaxis: str, yaxis: str):
+def show_fit(reg, x, y, title: str, xaxis: str, yaxis: str, classification: bool = False):
     """Fit and show the fit of a regression model on a train and test set."""
     x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
     reg.fit(x_train, y_train)
 
+    if classification:
+        matrix = sklearn.metrics.confusion_matrix(y_test, reg.predict(x_test))
+        matrix = matrix / matrix.sum()
+
+        fig = go.Figure(data=go.Heatmap(
+            z=matrix,
+            x=["False", "True"],
+            y=["False", "True"],
+            hoverongaps=False,
+            hovertemplate="True: %{y}<br>Predicted: %{x}<br>Count: %{z}<extra></extra>",
+            zmin=0,
+            zmax=1,
+            colorscale="Blues",
+        ))
+        # Write the % inside each cell
+        for i in range(2):
+            for j in range(2):
+                fig.add_annotation(
+                    x=j,
+                    y=i,
+                    text=f"{matrix[i, j]:.1%}",
+                    showarrow=False,
+                    font_size=20,
+                )
+
+        fig.update_layout(
+            title=title + f"<br>Accuracy: {reg.score(x_test, y_test):.3f} | Train size: {len(x_train)} | Test size: {len(x_test)} | Nvars: {len(x_train[0])}",
+            xaxis_title=xaxis,
+            yaxis_title=yaxis,
+            width=500,
+            height=500,
+        )
+        fig.show()
+
+        return reg
+
     fig = go.Figure()
     # Add the predictions on the train set, with a semi-transparent color
-    fig.add_scatter(x=y_train, y=reg.predict(x_train), mode="markers", marker=dict(color="rgba(255, 165, 0, 0.2)"), name="Train set")
+    fig.add_scatter(x=y_train, y=reg.predict(x_train), mode="markers", marker=dict(color="rgba(255, 165, 0, 0.2)"),
+                    name="Train set")
     # Add the predictions on the test set, with a blue color
-    fig.add_scatter(x=y_test, y=reg.predict(x_test), mode="markers", marker=dict(color="rgba(0, 0, 255, 1)"), name="Test set")
+    fig.add_scatter(x=y_test, y=reg.predict(x_test), mode="markers", marker=dict(color="rgba(0, 0, 255, 1)"),
+                    name="Test set")
     # Add the line y=x
     add_line(fig, "y=x")
-    fig.update_layout(title=title + f"<br>R2 score: {reg.score(x_test, y_test):.3f} | Train size: {len(x_train)} | Test size: {len(x_test)} | Nvars: {len(x_train[0])}",
-                      xaxis_title=xaxis,
-                      yaxis_title=yaxis,
-                      width=1000, height=1000)
+    fig.update_layout(
+        title=title + f"<br>R2 score: {reg.score(x_test, y_test):.3f} | Train size: {len(x_train)} | Test size: {len(x_test)} | Nvars: {len(x_train[0])}",
+        xaxis_title=xaxis,
+        yaxis_title=yaxis,
+        width=1000, height=1000)
     fig.show()
 
     return reg
