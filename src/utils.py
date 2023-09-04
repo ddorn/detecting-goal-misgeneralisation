@@ -268,7 +268,7 @@ class WandbWithBehaviorCallback(WandbCallback):
 
     def _on_rollout_start(self) -> None:
         super()._on_rollout_start()
-        # Show every  10 episodes
+        # Show every 10 rollouts
         self.time += 1
         if self.time % self.show_every == 0:
             show_behavior(self.model, self.env, max_len=20, add_to_wandb=True, plot=False)
@@ -411,8 +411,7 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
 
 
 def make_stats(policy, env: environments.ThreeGoalsEnv, n_episodes=100, subtitle: str = "",
-               wandb_name: str = None, plot: bool = True) -> Float[
-    torch.Tensor, "true_goal=3 end_pos=4"]:
+               wandb_name: str = None, plot: bool = True) -> Float[torch.Tensor, "true_goal=3 end_pos=4"]:
     """
     Returns stats of where the policy ended, given the true goal.
     """
@@ -514,7 +513,7 @@ def show_fit(reg, x, y, title: str, xaxis: str, yaxis: str):
     fig.update_layout(title=title + f"<br>R2 score: {reg.score(x_test, y_test):.3f} | Train size: {len(x_train)} | Test size: {len(x_test)} | Nvars: {len(x_train[0])}",
                       xaxis_title=xaxis,
                       yaxis_title=yaxis,
-                      width=1000)
+                      width=1000, height=1000)
     fig.show()
 
     return reg
