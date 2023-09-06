@@ -21,12 +21,17 @@ __all__ = [
     "WeightDecay",
     "L1WeightDecay",
     "PerChannelL1WeightDecay",
+    "ZeroOneRegularisation",
+    "Mask",
+    "LazyMask",
     "SwitchNetwork",
     "SwitchedLayer",
     "CustomActorCriticPolicy",
     "CustomPolicyValueNetwork",
     "NOPFeaturesExtractor",
 ]
+
+from torch.nn.modules.lazy import LazyModuleMixin
 
 
 class MLP(nn.Sequential):
@@ -178,6 +183,46 @@ class PerChannelL1WeightDecay(WeightDecay):
         # return parameter * (per_channel_norm * self.weight_decay)[..., None, None]
         # return parameter / (per_channel_norm[..., None, None] + 1e-8) * self.weight_decay
 
+
+class ZeroOneRegularisation(WeightDecay):
+    def regularize(self, parameter):
+        # Derivative of |x(1-x)| w.r.t. x=parameter.data
+        return torch.sign((1 - 2 * parameter.data) * torch.sign(parameter.data * (1 - parameter.data))) * self.weight_decay
+
+
+class Mask(nn.Module):
+    """A mask that multiplies its input elementwise."""
+    def __init__(self, shape):
+        super().__init__()
+        self.mask = nn.Parameter(torch.rand(shape))
+        self.flipped = False
+
+    def extra_repr(self) -> str:
+        return f"flipped={self.flipped}, shape={tuple(self.mask.shape)}"
+
+    def flip(self):
+        self.flipped = not self.flipped
+
+    def forward(self, x):
+        if self.flipped:
+            return x * (1 - self.mask)
+        return x * self.mask
+
+
+class LazyMask(LazyModuleMixin, Mask):
+    cls_to_become = Mask
+
+    def __init__(self):
+        super().__init__(())
+        self.mask = nn.UninitializedParameter()
+
+    def initialize_parameters(self, x):
+        if self.has_uninitialized_params():
+            with torch.no_grad():
+                self.mask.materialize(x.shape[1:])
+                nn.init.uniform_(self.mask, 0, 1)
+
+
 # Switch networks
 
 
@@ -311,7 +356,6 @@ class CustomActorCriticPolicy(ActorCriticPolicy):
             *args,
             **kwargs,
     ):
-
         if isinstance(arch, nn.Module):
             arch = (arch, None)
         self.arch = arch

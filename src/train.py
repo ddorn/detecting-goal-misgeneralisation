@@ -202,11 +202,14 @@ class Experiment(ABC):
         return filename
 
     @classmethod
-    def load(cls, idx: int) -> tuple[PPO, dict]:
+    def load(cls, idx: int, n_envs: int = None) -> tuple[PPO, dict]:
         """Load the model and metadata"""
         filename = MODELS_DIR / cls.name() / f"{idx}.zip"
         metadata = json.load(filename.with_suffix(".json").open("r"))
-        policy = PPO.load(filename)
+        if n_envs is not None:
+            policy = PPO.load(filename, env=make_vec_env(cls().get_eval_env, n_envs=n_envs))
+        else:
+            policy = PPO.load(filename)
         return policy, metadata
 
     @classmethod
@@ -291,7 +294,6 @@ class Experiment(ABC):
 
         console = rich.console.Console(force_jupyter=False)
         console.print(table, overflow="ignore", crop=False)
-
 
     @classmethod
     def load_all(cls) -> tuple[list[PPO], list[dict]]:

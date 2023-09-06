@@ -221,7 +221,8 @@ def record_activations(module: nn.Module) -> Cache:
             context manager is exited.
     """
 
-    activations = Cache()
+    cache = Cache()
+    activations: dict[str, list[Tensor]] = {}
     hooks = []
 
     skipped = set()
@@ -232,18 +233,24 @@ def record_activations(module: nn.Module) -> Cache:
         if not isinstance(output, Tensor):
             skipped.add(name)
         elif name not in activations:
-            activations[name] = output.detach()
+            activations[name] = [output.detach()]
         else:
-            activations[name] = torch.cat([activations[name], output.detach()], dim=0)
+            activations[name].append(output.detach())
 
     for module in module.modules():
         hooks.append(module.register_forward_hook(hook))
 
     try:
-        yield activations
+        yield cache
     finally:
         for hook in hooks:
             hook.remove()
+
+    for name, activation in activations.items():
+        if len(activation) == 1:
+            cache[name] = activation[0]
+        else:
+            cache[name] = torch.stack(activation)
 
     if skipped:
         print("Skipped:")
@@ -583,8 +590,8 @@ def show_fit(reg, x, y, title: str, xaxis: str, yaxis: str, classification: bool
             title=title + f"<br>Accuracy: {reg.score(x_test, y_test):.3f} | Train size: {len(x_train)} | Test size: {len(x_test)} | Nvars: {len(x_train[0])}",
             xaxis_title=xaxis,
             yaxis_title=yaxis,
-            width=500,
-            height=500,
+            width=600,
+            height=600,
         )
         fig.show()
 

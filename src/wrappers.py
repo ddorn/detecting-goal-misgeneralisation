@@ -23,6 +23,7 @@ __all__ = [
     "OneHotColorBlindWrapper",
     "WeightedChannelWrapper",
     "AddTrueGoalToObsFlat",
+    "FunctionRewardWrapper",
 ]
 
 T = TypeVar("T", bound=gym.Env)
@@ -300,3 +301,16 @@ class AddTrueGoalToObsFlat(ObservationWrapper):
             to_add = np.array([self.true_goal_idx], dtype=obs.dtype)
 
         return np.concatenate([flat, to_add])
+
+
+class FunctionRewardWrapper(gym.RewardWrapper):
+    """
+    Sets the reward to the output of the given function.
+    """
+
+    def __init__(self, env, reward_function: Callable[[gym.Env], float]):
+        super().__init__(env)
+        self.reward_function = reward_function
+
+    def reward(self, reward: float) -> float:
+        return self.reward_function(self.env)
