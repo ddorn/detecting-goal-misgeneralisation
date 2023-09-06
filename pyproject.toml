@@ -24,12 +24,17 @@ torchinfo = "^1.8.0"
 pygame = "^2.5.0"
 scikit-learn = "^1.3.0"
 rich = "^13.5.2"
-procgen = {git = "https://github.com/JacobPfau/procgenAISC.git"}
+procgen = {git = "https://github.com/JacobPfau/procgenAISC.git", tag = "7821f2c"}
 gym3 = "^0.3.3"
+poetry2conda = "^0.3.0"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+
+[tool.poetry2conda]
+name = "kasl-venv"
 
 [tool.yapf]
 column_limit = 100
