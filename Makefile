@@ -1,3 +1,6 @@
+.PHONY: deploy deploy-cam bring-agent-back
+
+
 deploy:
 	git ls-files | rsync -azP --files-from=- . csft:kasl
 	ssh csft "cd kasl && PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring /home/diego/.local/bin/poetry install"
@@ -9,8 +12,5 @@ deploy-cam:
 bring-agents-back:
 	rsync -azPr "csft:kasl/models/blind_three_goals_rgb_channel_reg/*" models/blind_three_goals_rgb_channel_reg
 
-
-environment.yaml: pyproject.toml
-	poetry2conda pyproject.toml environment.yaml
-	cat environment.yaml
-
+requirements.txt: pyproject.toml
+	poetry export -f requirements.txt -o requirements.txt --without-hashes
