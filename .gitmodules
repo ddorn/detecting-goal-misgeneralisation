@@ -1,3 +1,0 @@
-[submodule "train-procgen-pytorch"]
-	path = train-procgen-pytorch
-	url = git@github.com:jbkjr/train-procgen-pytorch.git

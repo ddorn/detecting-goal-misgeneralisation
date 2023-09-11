@@ -5,3 +5,4 @@ agents/
 wandb
 models
 old_run_logs
+cam_fs
