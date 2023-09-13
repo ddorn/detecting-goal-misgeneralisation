@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -321,9 +323,12 @@ class WeightDecayCallback(BaseCallback):
             module for module in self.model.policy.modules()
             # We would do isinstance(module, architectures.WeightDecay), but that would
             # not work when the code is reloaded in a notebook.
-            if any("WeightDecay" in c.__name__ for c in module.__class__.__mro__)
+            if isinstance(module, architectures.WeightDecay) or
+            any("WeightDecay" in c.__name__ for c in module.__class__.__mro__)  # for notebooks
         ]
-        assert len(self.modules_to_decay) > 0, "No modules to decay"
+
+        if not self.modules_to_decay:
+            warnings.warn(f"No modules to weight decay in {self.model.policy}", UserWarning)
 
     def _on_rollout_end(self) -> None:
         # noinspection PyProtectedMember
@@ -377,10 +382,13 @@ def sample_trajectories(
     return to_show
 
 
-def evaluate(policy_, env_: ThreeGoalsEnv,
+def evaluate(policy_, env_: gym.Env,
              n_episodes=1000, max_len=20, show_n=30,
              add_to_wandb=False, plot=True, **plotly_kwargs):
     """Return the proportion of episodes where the agent reached the true goal."""
+    unwrapped = env_.unwrapped
+    assert isinstance(unwrapped, environments.ThreeGoalsEnv)
+
     found = 0
     terminated = 0
 
@@ -389,7 +397,7 @@ def evaluate(policy_, env_: ThreeGoalsEnv,
         trajectory = Trajectory.from_policy(
             policy_, env_, max_len=max_len,
             # end_condition=lambda locals_: env_.agent_pos == env_.goal_positions[env_.true_goal_idx]
-            end_condition=lambda locals_: env_.last_reward == 1
+            end_condition=lambda locals_: unwrapped.last_reward == 1
         )
 
         if trajectory.ended == "condition":
@@ -469,20 +477,30 @@ def destination_stats(policy, env: gym.Env, n_episodes=100,
     )
 
 
-def make_stats(policy, env: environments.ThreeGoalsEnv, n_episodes=100, subtitle: str = "",
+def make_stats(policy, env: gym.Env, n_episodes=100, subtitle: str = "",
                wandb_name: str = None, plot: bool = True) -> Float[Tensor, "true_goal=3 end_pos=4"]:
     """
     Returns stats of where the policy ended, given the true goal.
     """
+    wrapped = env
+    env = env.unwrapped
+    assert isinstance(env, environments.ThreeGoalsEnv)
+
+    # positions = [(x, y) for x in range(env.width) for y in range(env.height)]
+    # all_positions = set(itertools.combinations(positions, 4))
 
     stats = np.zeros((3, 4))
     for _ in tqdm(range(n_episodes)):
-        obs, _ = env.reset()
+        # if not all_positions:
+        #     break
+        # red, green, blue, agent = all_positions.pop()
+
+        obs, _ = wrapped.reset()
         true_goal = env.true_goal_idx
         done = terminated = False
         while not (done or terminated):
             action, _ = policy.predict(obs)
-            obs, _, done, terminated, _ = env.step(action)
+            obs, _, done, terminated, _ = wrapped.step(action)
 
         try:
             end_goal = env.goal_positions.index(env.agent_pos)

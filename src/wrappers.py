@@ -5,7 +5,7 @@ Wrappers for grid environments.
 from __future__ import annotations
 
 import math
-from typing import Callable, TypeVar, SupportsFloat, Any, Iterable
+from typing import Callable, TypeVar, SupportsFloat, Any, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -87,7 +87,6 @@ class AddSwitch(ObservationWrapper):
 
 
 class BaseBlindWrapper(ObservationWrapper):
-    env: envs.ThreeGoalsEnv
 
     def __init__(self, env: gym.Env,
                  merged_channels: tuple[int, ...] = (0, 1),
@@ -103,18 +102,19 @@ class BaseBlindWrapper(ObservationWrapper):
 
         super().__init__(env)
 
-    def step(self, action
-    ) -> tuple[WrapperObsType, SupportsFloat, bool, bool, dict[str, Any]]:
+    def step(self, action) -> tuple[WrapperObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         observation, reward, terminated, truncated, info = self.env.step(action)
+        unwrapped = self.env.unwrapped
+        assert isinstance(unwrapped, envs.ThreeGoalsEnv)
 
         # Update the reward
         if not self.disabled and self.reward_indistinguishable_goals and terminated:
             # We reached a goal, find which one
-            idx = self.env.goal_positions.index(self.env.agent_pos)
+            idx = unwrapped.goal_positions.index(unwrapped.agent_pos)
 
             # Update the reward so that if the agent reached
             # a goal indistinguishable from the true goal, it gets a reward of 1 too
-            if self.is_indistinguishable_from_true_goal(self.env.GOAL_CELLS[idx]):
+            if self.is_indistinguishable_from_true_goal(unwrapped.GOAL_CELLS[idx]):
                 reward = 1
                 self.unwrapped.last_reward = reward
 
@@ -132,6 +132,7 @@ class ColorBlindWrapper(BaseBlindWrapper):
     Input: MultiDiscrete((width, height))
     Output: Box((width, height, 3), [0, 1])
     """
+    unwrapped: envs.ThreeGoalsEnv
 
     def __init__(self, env,
                  merged_channels: tuple[int, ...] = (0, 1),
@@ -170,8 +171,9 @@ class ColorBlindWrapper(BaseBlindWrapper):
             return self.color_map_blind
 
     def is_indistinguishable_from_true_goal(self, goal: envs.Cell) -> bool:
-        goal_idx = self.env.ALL_CELLS.index(goal)
-        true_idx = self.env.ALL_CELLS.index(self.env.true_goal)
+        unwrapped = self.unwrapped
+        goal_idx = unwrapped.ALL_CELLS.index(goal)
+        true_idx = unwrapped.ALL_CELLS.index(unwrapped.true_goal)
 
         goal_color = self.color_map[goal_idx]
         true_color = self.color_map[true_idx]
@@ -191,23 +193,27 @@ class OneHotColorBlindWrapper(BaseBlindWrapper):
     Output: MultiBinary((width, height, n_cells))
     """
 
+    unwrapped: envs.ThreeGoalsEnv
+
     def __init__(self, env: gym.Env,
                  merged_channels: tuple[int, ...] = (2, 3),
                  reward_indistinguishable_goals: bool = False,
                  disabled: bool = False):
+        assert isinstance(env.unwrapped, envs.ThreeGoalsEnv)
         super().__init__(env, merged_channels, reward_indistinguishable_goals, disabled)
 
-        self.n_cells = len(self.env.ALL_CELLS)
+        self.n_cells = len(self.unwrapped.ALL_CELLS)
         self.observation_space = gym.spaces.MultiBinary(n=(*env.observation_space.shape, self.n_cells))
 
     def is_indistinguishable_from_true_goal(self, goal: envs.Cell) -> bool:
-        if goal == self.env.true_goal:
+        unwrapped = self.unwrapped
+        if goal == unwrapped.true_goal:
             return True
         elif self.disabled:
             return False
         else:
-            true_channel = self.env.ALL_CELLS.index(self.env.true_goal)
-            goal_channel = self.env.ALL_CELLS.index(goal)
+            true_channel = unwrapped.ALL_CELLS.index(unwrapped.true_goal)
+            goal_channel = unwrapped.ALL_CELLS.index(goal)
             return true_channel in self.merge_channels and goal_channel in self.merge_channels
 
     def observation(self, observation: np.ndarray) -> WrapperObsType:
@@ -234,7 +240,7 @@ class WeightedChannelWrapper(ObservationWrapper):
     Output: Box((width, height, n_channels))
     """
 
-    def __init__(self, env, weights: Iterable[float], disabled: bool = False):
+    def __init__(self, env, weights: Sequence[float], disabled: bool = False):
         super().__init__(env)
         self.disabled = disabled
         obs = env.observation_space
@@ -269,8 +275,9 @@ class AddTrueGoalToObsFlat(ObservationWrapper):
         super().__init__(env)
         in_space = env.observation_space
 
-        # noinspection PyUnresolvedReferences
-        self.n_goals = len(env.GOAL_CELLS)
+        unwrapped = env.unwrapped
+        assert isinstance(unwrapped, envs.ThreeGoalsEnv)
+        self.n_goals = len(unwrapped.GOAL_CELLS)
 
         if isinstance(in_space, MultiBinary):
             self.goal_is_one_hot = True
@@ -296,9 +303,9 @@ class AddTrueGoalToObsFlat(ObservationWrapper):
 
         if self.goal_is_one_hot:
             to_add = np.zeros((self.n_goals,), dtype=obs.dtype)
-            to_add[self.true_goal_idx] = 1
+            to_add[self.unwrapped.true_goal_idx] = 1
         else:
-            to_add = np.array([self.true_goal_idx], dtype=obs.dtype)
+            to_add = np.array([self.unwrapped.true_goal_idx], dtype=obs.dtype)
 
         return np.concatenate([flat, to_add])
 

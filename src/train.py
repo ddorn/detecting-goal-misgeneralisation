@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from pprint import pprint
-from typing import Callable, Generator
+from typing import Callable, Generator, Optional
 
 import click
 import gymnasium as gym
@@ -24,7 +24,7 @@ import torchinfo
 import wandb
 from joblib import Parallel, delayed
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback, EveryNTimesteps
 from stable_baselines3.common.env_util import make_vec_env
 from torch import nn
 from tqdm.autonotebook import tqdm
@@ -42,13 +42,15 @@ MODELS_DIR = ROOT / "models"
 warnings.filterwarnings("ignore", module="torch.nn.modules.lazy")
 
 
-def find_filename(directory: Path, prefix: str = "", ext="zip") -> Path:
+def find_filename(directory: Path, prefix: str = "", ext=".zip") -> Path:
     """Find the first available filename with the given prefix"""
-    idx = 0
-    while (directory / f"{prefix}{idx}.{ext}").exists():
-        idx += 1
-    return directory / f"{prefix}{idx}.{ext}"
 
+    # Cleaner:
+    while True:
+        idx = random.randrange(0, 1_000_000)
+        filename = directory / f"{prefix}{idx}{ext}"
+        if not filename.exists():
+            return filename.resolve()
 
 def apply_all(decorators):
     """Apply all the decorators to a function"""
@@ -95,10 +97,18 @@ class Experiment(ABC):
         default=4,
         metadata=dict(help="Size of the environment"),
     )
+    nb_checkpoints: int = field(
+        default=0,
+        metadata=dict(help="Number of checkpoints to save"),
+    )
     seed: int = field(
         default=None,
         metadata=dict(help="Seed to use"),
     )
+
+    def __post_init__(self):
+        self.save_dir = find_filename(MODELS_DIR / self.name(), ext="")
+        self.save_dir.mkdir(parents=True, exist_ok=False)
 
     @classmethod
     def name(cls) -> str:
@@ -107,15 +117,17 @@ class Experiment(ABC):
         # Convert CamelCase to snake_case
         return re.sub(r'(?<!^)(?=[A-Z])', '_', cls.__name__).lower()
 
+
     def run(self):
         """Run one instance of the experiment"""
 
+        args = dataclasses.asdict(self)
+        args['save_dir'] = str(self.save_dir)
         if self.seed is None:
             seed = random.randint(0, 2 ** 32 - 1)
-            args = {**dataclasses.asdict(self), "seed": seed}
+            args["seed"] = seed
         else:
             seed = self.seed
-            args = dataclasses.asdict(self)
 
         # Define the policy network
         policy = PPO(
@@ -131,6 +143,24 @@ class Experiment(ABC):
 
         # Start wandb and define callbacks
         callbacks = [src.ProgressBarCallback(), *self.get_callbacks()]
+        if self.nb_checkpoints:
+            steps_per_checkpoint = int(self.total_timesteps / self.nb_checkpoints)
+
+            class CheckpointEvalCallback(EveryNTimesteps):
+                def __init__(self, n_steps, experiment: Experiment):
+                    super().__init__(n_steps, None)
+                    self.experiment = experiment
+
+                def _on_event(self):
+                    checkpoint_evaluation = self.experiment.evaluate(self.model)
+                    if self.experiment.use_wandb:
+                        wandb.log(checkpoint_evaluation, commit=False)
+                    self.experiment.save(policy,
+                                         dict(timesteps=self.num_timesteps, eval=checkpoint_evaluation),
+                                         self.num_timesteps)
+
+            callbacks.append(CheckpointEvalCallback(steps_per_checkpoint, self))
+
         if self.use_wandb:
             wandb.init(
                 sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
@@ -148,15 +178,14 @@ class Experiment(ABC):
 
         evaluation = self.evaluate(policy)
 
-        filename = self.save(policy, dict(
+        self.save(policy, dict(
             eval=evaluation,
             args=args,
             id=wandb.run.id if self.use_wandb else None,
         ))
 
-        # Log the evaluation stats, filename, and exit
+        # Log the evaluation stats, and exit
         if self.use_wandb:
-            wandb.config.filename = filename
             wandb.log(evaluation, commit=False)
             wandb.finish()
 
@@ -191,19 +220,94 @@ class Experiment(ABC):
             src.WeightDecayCallback(lambda f: (1 - f) * self.final_wd),
         ]
 
-    def save(self, policy, metadata):
+    def save(self, policy, metadata, num_timesteps: int = None):
         """Save the model and metadata"""
-        filename = find_filename(MODELS_DIR / self.name())
-        policy.save(filename)
+        if num_timesteps is None:
+            num_timesteps = ""
+        else:
+            num_timesteps = f"_{num_timesteps}"
 
-        json.dump(metadata, filename.with_suffix(".json").open("w"))
+        model_file = self.save_dir / f"model{num_timesteps}.zip"
+        assert not model_file.exists(), f"Model file {model_file} already exists"
+        metadata_file = self.save_dir / f"metadata{num_timesteps}.json"
+        assert not metadata_file.exists(), f"Metadata file {metadata_file} already exists"
 
-        print(f"Saved model to {filename}")
-        return filename
+        policy.save(model_file)
+        metadata_file.write_text(json.dumps(metadata, indent=2))
+        print(f"Saved model to {model_file}")
 
     @classmethod
-    def load(cls, idx: int, n_envs: int = None) -> tuple[PPO, dict]:
+    def load(cls, idx: int, checkpoint: Optional[int] = None, n_envs: int = None) -> tuple[PPO, dict]:
         """Load the model and metadata"""
+        if checkpoint is None:
+            checkpoint = ""
+        else:
+            checkpoint = f"_{checkpoint}"
+
+        directory = MODELS_DIR / cls.name() / str(idx)
+        metadata = json.loads((directory / f"metadata{checkpoint}.json").read_text())
+        filename = directory / f"model{checkpoint}.zip"
+        if n_envs is not None:
+            policy = PPO.load(filename, env=make_vec_env(cls().get_eval_env, n_envs=n_envs))
+        else:
+            policy = PPO.load(filename)
+        return policy, metadata
+
+    @classmethod
+    def load_all(cls, idx: Optional[int] = None) -> tuple[list[PPO], list[dict]]:
+        """Load all the runs for this experiment. If an index is passed, load all checkpoint for this run instead."""
+
+        folder = MODELS_DIR / cls.name()
+        if idx is None:
+            # Models are of the form {idx}/model.zip
+            to_load = [(int(f.parent.stem), None) for f in folder.glob("*/model.zip")]
+        else:
+            folder = folder / str(idx)
+            # Checkpoints are of the form model_{checkpoint}.zip
+            to_load = [(idx, int(f.stem.split('_')[1])) for f in folder.glob("model_*.zip")]
+
+        print("Loading", len(to_load), "models from", folder)
+        models_and_stats = [cls.load(idx, checkpoint) for idx, checkpoint in tqdm(sorted(to_load))]
+        models, stats = zip(*models_and_stats)
+        return models, stats
+
+    @classmethod
+    def load_all_checkpoints_stats(cls, idx: Optional[int] = None) -> list[list[dict]]:
+        """Load all the stats for this experiment. If an index is passed, load all checkpoint for this run instead."""
+
+        folder = MODELS_DIR / cls.name()
+
+        if idx is None:
+            all_runs = [int(f.parent.stem) for f in folder.glob("*/model.zip")]
+        else:
+            all_runs = [idx]
+
+        # Models are of the form {idx}/metadata_{steps}.json
+        to_load = [
+            [
+                (int(f.parent.stem), int(f.stem.split('_')[1]))
+                for f in folder.glob(f"{idx}/metadata_*.json")
+            ]
+            for idx in all_runs
+        ]
+
+        if len(set(map(len, to_load))) != 1:
+            warnings.warn("Not all runs have the same number of checkpoints")
+
+        print("Loading", sum(map(len, to_load)), "stats from", folder)
+        stats = [
+            [
+                json.loads((folder / str(idx) / f"metadata_{steps}.json").read_text())
+                for idx, steps in sorted(checkpoints)
+            ]
+            for checkpoints in tqdm(to_load)
+        ]
+        return stats
+
+
+    @classmethod
+    def load_v1(cls, idx: int, n_envs: int = None) -> tuple[PPO, dict]:
+        """Load the model and metadata. Use with models trained before 2023-09-11."""
         filename = MODELS_DIR / cls.name() / f"{idx}.zip"
         metadata = json.load(filename.with_suffix(".json").open("r"))
         if n_envs is not None:
@@ -295,32 +399,19 @@ class Experiment(ABC):
         console = rich.console.Console(force_jupyter=False)
         console.print(table, overflow="ignore", crop=False)
 
-    @classmethod
-    def load_all(cls) -> tuple[list[PPO], list[dict]]:
-        """Load all the runs for this experiment"""
 
-        folder = MODELS_DIR / cls.name()
-        to_load = sorted(folder.glob("*.zip"), key=lambda f: int(f.stem))
-
-        print("Loading", len(to_load), "models from", folder)
-        models = [PPO.load(file) for file in tqdm(to_load)]
-        stats = [json.load(file.with_suffix(".json").open()) for file in to_load]
-        assert len(models) == len(stats)
-        return models, stats
-
-
-@dataclass
-class BlindThreeGoalsOneHot(Experiment):
+class BlindThreeGoals(Experiment):
     """
-    Blind one-hot version of ThreeGoalsEnv
+    Blind RGB version of ThreeGoalsEnv
 
     The agent is trained on a color-blind version of the environment, where the agent
-    cannot distinguish between red and green, that is, whenever a cell contains a red
-    or green goal, the agent sees a 1 in both the red and green channels.
+    cannot distinguish between red and green channels of the image, but only the max
+    of the two.
     """
 
-    def get_arch(self):
-        arch = nn.Sequential(
+    def get_arch(self) -> nn.Module:
+        # Define the architecture
+        return nn.Sequential(
             src.Split(
                 -3,
                 left=nn.Sequential(
@@ -338,21 +429,19 @@ class BlindThreeGoalsOneHot(Experiment):
             nn.Linear(32, 32),
             nn.ReLU(),
         )
-        arch = src.L1WeightDecay(arch, 0)
-        return arch
+
+    def get_env(self, full_color: bool) -> Callable[[], gym.Env]:
+        return src.wrap(
+            lambda: src.ThreeGoalsEnv(self.env_size, step_reward=0.0),
+            lambda env: src.ColorBlindWrapper(env, reduction='max',
+                                              reward_indistinguishable_goals=True, disabled=full_color),
+            lambda env: src.AddTrueGoalToObsFlat(env),
+        )
 
     def policy_kwargs(self) -> dict[str, object]:
         # We use L1 weight decay, not L2 here
         return dict(
             optimizer_kwargs=dict(weight_decay=0),
-        )
-
-    def get_env(self, full_color: bool) -> Callable[[], gym.Env]:
-        """Return a function that returns the environment"""
-        return src.wrap(
-            lambda: src.ThreeGoalsEnv(self.env_size, step_reward=0.0),
-            lambda env: src.OneHotColorBlindWrapper(env, reward_indistinguishable_goals=True, disabled=full_color),
-            lambda env: src.AddTrueGoalToObsFlat(env),
         )
 
     def get_train_env(self) -> gym.Env:
@@ -384,7 +473,29 @@ class BlindThreeGoalsOneHot(Experiment):
 
 
 @dataclass
-class BlindThreeGoalsRgbChannelReg(BlindThreeGoalsOneHot):
+class BlindThreeGoalsOneHot(Experiment):
+    """
+    Blind one-hot version of ThreeGoalsEnv
+
+    The agent is trained on a color-blind version of the environment, where the agent
+    cannot distinguish between red and green, that is, whenever a cell contains a red
+    or green goal, the agent sees a 1 in both the red and green channels.
+    """
+
+    def get_arch(self):
+        arch = super().get_arch()
+        return src.L1WeightDecay(arch, 0)
+
+    def get_env(self, full_color: bool) -> Callable[[], gym.Env]:
+        """Return a function that returns the environment"""
+        return src.wrap(
+            lambda: src.ThreeGoalsEnv(self.env_size, step_reward=0.0),
+            lambda env: src.OneHotColorBlindWrapper(env, reward_indistinguishable_goals=True, disabled=full_color),
+            lambda env: src.AddTrueGoalToObsFlat(env),
+        )
+
+@dataclass
+class BlindThreeGoalsRgbChannelReg(BlindThreeGoals):
     """
     Blind RGB version of ThreeGoalsEnv with channel regularization
 
@@ -403,37 +514,13 @@ class BlindThreeGoalsRgbChannelReg(BlindThreeGoalsOneHot):
     def __init__(self, *, initial_lr: float = 0.1, **kwargs):
         super().__init__(initial_lr=initial_lr, **kwargs)
 
-    def get_arch(self) -> nn.Module:
-        # Define the architecture
-        return nn.Sequential(
-            src.Split(
-                -3,
-                left=nn.Sequential(
-                    src.Rearrange("... (h w c) -> ... c h w", h=self.env_size, w=self.env_size),
-                    src.PerChannelL1WeightDecay(
-                        nn.LazyConv2d(8, 3, padding=1),
-                        0,
-                        name_filter="weight",
-                    ),
-                    nn.ReLU(),
-                    nn.Conv2d(8, 8, 3, padding=1),
-                    nn.ReLU(),
-                    nn.Flatten(-3),
-                ),
-                right=nn.Identity(),
-            ),
-            nn.LazyLinear(32),
-            nn.ReLU(),
-            nn.Linear(32, 32),
-            nn.ReLU(),
-        )
-
-    def get_env(self, full_color: bool) -> Callable[[], gym.Env]:
-        return src.wrap(
-            lambda: src.ThreeGoalsEnv(self.env_size, step_reward=0.0),
-            lambda env: src.ColorBlindWrapper(env, reduction='max',
-                                              reward_indistinguishable_goals=True, disabled=full_color),
-            lambda env: src.AddTrueGoalToObsFlat(env),
+    def get_arch(self):
+        arch = super().get_arch()
+        return src.PerChannelL1WeightDecay(
+            arch,
+            0,
+            # Only the weight of the first convolutional layer
+            name_filter="mlp_extractor.policy_net.0.left.1.module.weight",
         )
 
 
