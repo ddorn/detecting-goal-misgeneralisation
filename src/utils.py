@@ -432,8 +432,9 @@ def destination_stats(policy, env: gym.Env, n_episodes=100,
         - the type of end (end on red, green, blue or did not find goal)
         - the true goal
     """
-    env: environments.ThreeGoalsEnv
-    assert isinstance(env.unwrapped, environments.ThreeGoalsEnv)
+    wrapped = env
+    env = wrapped.unwrapped
+    assert isinstance(env, environments.ThreeGoalsEnv)
 
     agent_pos = []
     goal_positions = []
@@ -441,12 +442,12 @@ def destination_stats(policy, env: gym.Env, n_episodes=100,
     true_goals = []
 
     for _ in tqdm(range(n_episodes)):
-        obs, _ = env.reset()
+        obs, _ = wrapped.reset()
         done = terminated = False
         episode_len = 0
         while not (done or terminated):
             action, _ = policy.predict(obs)
-            obs, _, done, terminated, _ = env.step(action)
+            obs, _, done, terminated, _ = wrapped.step(action)
 
             episode_len += 1
             agent_pos.append(env.agent_pos)
